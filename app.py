@@ -98,33 +98,7 @@ def location_ping():
 
     return jsonify({"status": "ok"})
 
-@app.route("/api/clock-out", methods=["POST"])
-def clock_out():
-    data = request.json
-    shift_id = data["shift_id"]
-    lat = float(data["lat"])
-    lng = float(data["lng"])
-
-    conn = get_db_conn()
-    cur = conn.cursor()
-
-    cur.execute("SELECT id FROM shifts WHERE id = %s AND status = 'open'", (shift_id,))
-    if not cur.fetchone():
-        return jsonify({"error": "Shift not found or already closed."}), 400
-
-    now = datetime.utcnow()
-    cur.execute("""
-        UPDATE shifts
-        SET clock_out_time = %s, clock_out_lat = %s, clock_out_lng = %s, status = 'closed'
-        WHERE id = %s
-    """, (now, lat, lng, shift_id))
-    conn.commit()
-    cur.close()
-    conn.close()
-
-    return jsonify({"status": "clocked_out"})
-  
-    @app.route("/admin")
+@app.route("/admin")
 def admin_dashboard():
     """
     Simple dashboard to show recent shifts.
@@ -168,6 +142,8 @@ def admin_dashboard():
 
     return render_template("admin.html", shifts=shifts)
 
+
 if __name__ == "__main__":
     app.run(debug=True)
+
 
