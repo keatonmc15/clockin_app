@@ -106,26 +106,28 @@ def admin_dashboard():
     conn = get_db()
     cur = conn.cursor()
 
-    cur.execute(
-        """
-        SELECT
-            s.id,
-            e.name AS employee_name,
-            st.name AS store_name,
-            s.clock_in_time,
-            s.clock_out_time,
-            s.status
-        FROM shifts s
-        JOIN employees e ON s.employee_id = e.id
-        JOIN stores st ON s.store_id = st.id
-        ORDER BY s.clock_in_time DESC
-        LIMIT 100;
-        """
-    )
+    try:
+        cur.execute(
+            """
+            SELECT
+                s.id,
+                COALESCE(e.name, '(unknown)') AS employee_name,
+                COALESCE(st.name, '(unknown)') AS store_name,
+                s.clock_in_time,
+                s.clock_out_time,
+                s.status
+            FROM shifts s
+            LEFT JOIN employees e ON s.employee_id = e.id
+            LEFT JOIN stores st ON s.store_id = st.id
+            ORDER BY s.clock_in_time DESC NULLS LAST, s.id DESC
+            LIMIT 100;
+            """
+        )
 
-    rows = cur.fetchall()
-    cur.close()
-    conn.close()
+        rows = cur.fetchall()
+    finally:
+        cur.close()
+        conn.close()
 
     shifts = []
     for row in rows:
@@ -143,7 +145,9 @@ def admin_dashboard():
     return render_template("admin.html", shifts=shifts)
 
 
+
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
