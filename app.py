@@ -97,7 +97,6 @@ def location_ping():
     conn.close()
 
     return jsonify({"status": "ok"})
-
 @app.route("/admin")
 def admin_dashboard():
     """
@@ -108,7 +107,7 @@ def admin_dashboard():
         conn = get_db()
         cur = conn.cursor()
 
-        # Keep the query simple for now
+        # Simple query — avoids joins until everything works
         cur.execute(
             """
             SELECT
@@ -128,7 +127,6 @@ def admin_dashboard():
         cur.close()
         conn.close()
 
-        # For now, just make a simple list the template expects
         shifts = []
         for row in rows:
             shifts.append(
@@ -145,13 +143,13 @@ def admin_dashboard():
         return render_template("admin.html", shifts=shifts)
 
     except Exception as e:
-        # If anything explodes (DB, template, etc), show it on the page
+        # Show full error in the browser so we know what's wrong
         return f"Admin error: {repr(e)}", 500
-
 
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
