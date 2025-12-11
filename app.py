@@ -102,52 +102,57 @@ def location_ping():
 def admin_dashboard():
     """
     Simple dashboard to show recent shifts.
+    If something goes wrong, show the error text in the browser.
     """
-    conn = get_db()
-    cur = conn.cursor()
-
     try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Keep the query simple for now
         cur.execute(
             """
             SELECT
-                s.id,
-                COALESCE(e.name, '(unknown)') AS employee_name,
-                COALESCE(st.name, '(unknown)') AS store_name,
-                s.clock_in_time,
-                s.clock_out_time,
-                s.status
-            FROM shifts s
-            LEFT JOIN employees e ON s.employee_id = e.id
-            LEFT JOIN stores st ON s.store_id = st.id
-            ORDER BY s.clock_in_time DESC NULLS LAST, s.id DESC
+                id,
+                employee_id,
+                store_id,
+                clock_in_time,
+                clock_out_time,
+                status
+            FROM shifts
+            ORDER BY clock_in_time DESC NULLS LAST, id DESC
             LIMIT 100;
             """
         )
 
         rows = cur.fetchall()
-    finally:
         cur.close()
         conn.close()
 
-    shifts = []
-    for row in rows:
-        shifts.append(
-            {
-                "id": row[0],
-                "employee_name": row[1],
-                "store_name": row[2],
-                "clock_in_time": row[3],
-                "clock_out_time": row[4],
-                "status": row[5],
-            }
-        )
+        # For now, just make a simple list the template expects
+        shifts = []
+        for row in rows:
+            shifts.append(
+                {
+                    "id": row[0],
+                    "employee_name": f"Employee #{row[1]}",
+                    "store_name": f"Store #{row[2]}",
+                    "clock_in_time": row[3],
+                    "clock_out_time": row[4],
+                    "status": row[5],
+                }
+            )
 
-    return render_template("admin.html", shifts=shifts)
+        return render_template("admin.html", shifts=shifts)
+
+    except Exception as e:
+        # If anything explodes (DB, template, etc), show it on the page
+        return f"Admin error: {repr(e)}", 500
 
 
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
