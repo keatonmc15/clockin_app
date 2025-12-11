@@ -123,6 +123,51 @@ def clock_out():
     conn.close()
 
     return jsonify({"status": "clocked_out"})
+  
+    @app.route("/admin")
+def admin_dashboard():
+    """
+    Simple dashboard to show recent shifts.
+    """
+    conn = get_db()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        SELECT
+            s.id,
+            e.name AS employee_name,
+            st.name AS store_name,
+            s.clock_in_time,
+            s.clock_out_time,
+            s.status
+        FROM shifts s
+        JOIN employees e ON s.employee_id = e.id
+        JOIN stores st ON s.store_id = st.id
+        ORDER BY s.clock_in_time DESC
+        LIMIT 100;
+        """
+    )
+
+    rows = cur.fetchall()
+    cur.close()
+    conn.close()
+
+    shifts = []
+    for row in rows:
+        shifts.append(
+            {
+                "id": row[0],
+                "employee_name": row[1],
+                "store_name": row[2],
+                "clock_in_time": row[3],
+                "clock_out_time": row[4],
+                "status": row[5],
+            }
+        )
+
+    return render_template("admin.html", shifts=shifts)
 
 if __name__ == "__main__":
     app.run(debug=True)
+
