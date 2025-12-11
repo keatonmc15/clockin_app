@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Clock In/Out</title>
+</head>
+<body>
+  <h2>Store Clock In/Out</h2>
+  <p id="status"></p>
+
+  <div id="pin-section">
+    <label>Enter your PIN:</label>
+    <input type="password" id="pin">
+    <button onclick="clockIn()">Clock In</button>
+  </div>
+
+  <div id="clockout-section" style="display:none;">
+    <p>You are clocked in.</p>
+    <button onclick="clockOut()">Clock Out</button>
+  </div>
+
+<script>
+const storeToken = "{{ store_token }}";
+let shiftId = localStorage.getItem("shift_id") || null;
+let gpsTimer = null;
+
+// ----------------------------------------------------
+//  FAKE GPS: Always return the Reasor's South BA coords
+// ----------------------------------------------------
+function getLocation(callback) {
+  callback({
+    latitude: 36.0219,
+    longitude: -95.7984
+  });
+}
+
+function clockIn() {
+  const pin = document.getElementById("pin").value;
+  const statusEl = document.getElementById("status");
+
+  if (!pin) {
+    alert("Enter your PIN");
+    return;
+  }
+
+  statusEl.innerText = "Trying to clock in...";
+  console.log("Clock-in clicked. PIN:", pin, "storeToken:", storeToken);
+
+  getLocation(coords => {
+    console.log("Using coords:", coords);
+
+    fetch("/api/clock-in", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        store_token: storeToken,
+        pin: pin,
+        lat: coords.latitude,
+        lng: coords.longitude
+      })
+    })
+    .then(async (r) => {
+      const text = await r.text();
+      console.log("Server raw response:", text);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        console.error("Non-JSON response:", text);
+        statusEl.innerText = "Server error. Check with office.";
+        return;
+      }
+
+      if (data.error) {
+        statusEl.innerText = data.error;
+        return;
+      }
+
+      shiftId = data.shift_id;
+      localStorage.setItem("shift_id", shiftId);
+
+      statusEl.innerText = "Clocked in at " + data.store_name;
+
+      document.getElementById("pin-section").style.display = "none";
+      document.getElementById("clockout-section").style.display = "block";
+
+      startGpsTracking();
+    })
+    .catch(err => {
+      console.error("Clock-in failed:", err);
+      statusEl.innerText = "Clock-in network error.";
+    });
+  });
+}
+
+function startGpsTracking() {
+  if (gpsTimer) clearInterval(gpsTimer);
+
+  gpsTimer = setInterval(() => {
+    if (!shiftId) return;
+
+    getLocation(coords => {
+      fetch("/api/location-ping", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          shift_id: shiftId,
+          lat: coords.latitude,
+          lng: coords.longitude
+        })
+      }).catch(err => console.error("Ping failed:", err));
+    });
+  }, 3 * 60 * 1000);
+}
+
+function clockOut() {
+  const statusEl = document.getElementById("status");
+
+  if (!shiftId) {
+    statusEl.innerText = "No active shift.";
+    return;
+  }
+
+  getLocation(coords => {
+    fetch("/api/clock-out", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        shift_id: shiftId,
+        lat: coords.latitude,
+        lng: coords.longitude
+      })
+    })
+    .then(async (r) => {
+      const text = await r.text();
+      console.log("Clock-out raw response:", text);
+      let data;
+      try {
+        data = JSON.parse(text);
+      } catch (e) {
+        console.error("Clock-out non-JSON:", text);
+        statusEl.innerText = "Server error on clock-out.";
+        return;
+      }
+
+      if (data.error) {
+        statusEl.innerText = data.error;
+        return;
+      }
+
+      statusEl.innerText = "Clocked out.";
+      localStorage.removeItem("shift_id");
+      shiftId = null;
+      if (gpsTimer) clearInterval(gpsTimer);
+
+      document.getElementById("pin-section").style.display = "block";
+      document.getElementById("clockout-section").style.display = "none";
+    })
+    .catch(err => {
+      console.error("Clock-out request error:", err);
+      statusEl.innerText = "Network error on clock-out.";
+    });
+  });
+}
+
+// Restore UI if refreshed during a shift
+if (shiftId) {
+  document.getElementById("pin-section").style.display = "none";
+  document.getElementById("clockout-section").style.display = "block";
+  startGpsTracking();
+}
+</script>
