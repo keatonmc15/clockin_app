@@ -28,11 +28,20 @@ let gpsTimer = null;
 //  FAKE GPS: Always return the Reasor's South BA coords
 // ----------------------------------------------------
 function getLocation(callback) {
-  callback({
-    latitude: 36.0219,
-    longitude: -95.7984
-  });
+  if (!navigator.geolocation) {
+    alert("Geolocation not supported on this device.");
+    return;
+  }
+  navigator.geolocation.getCurrentPosition(
+    pos => callback(pos.coords),
+    err => {
+      alert("Location error: " + err.message);
+      console.error("Geolocation error:", err);
+    },
+    { enableHighAccuracy: true, timeout: 10000 }
+  );
 }
+
 
 function clockIn() {
   const pin = document.getElementById("pin").value;
@@ -170,3 +179,4 @@ if (shiftId) {
   startGpsTracking();
 }
 </script>
+
