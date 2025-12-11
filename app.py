@@ -97,6 +97,7 @@ def location_ping():
     conn.close()
 
     return jsonify({"status": "ok"})
+    
 @app.route("/admin")
 def admin_dashboard():
     """
@@ -149,6 +150,7 @@ def admin_dashboard():
 
 if __name__ == "__main__":
     app.run(debug=True)
+
 
 
 
