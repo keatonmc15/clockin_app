@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Clock-In Admin Dashboard</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 20px;
+      background: #f5f5f5;
+    }
+    h1 {
+      margin-bottom: 10px;
+    }
+    .note {
+      margin-bottom: 15px;
+      color: #555;
+      font-size: 0.9rem;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      background: #fff;
+    }
+    th, td {
+      border: 1px solid #ddd;
+      padding: 8px;
+      font-size: 0.9rem;
+    }
+    th {
+      background-color: #eee;
+      text-align: left;
+    }
+    tr:nth-child(even) {
+      background-color: #f9f9f9;
+    }
+    .status-open {
+      color: #b00;
+      font-weight: bold;
+    }
+    .status-closed {
+      color: #0a0;
+      font-weight: normal;
+    }
+  </style>
+</head>
+<body>
+  <h1>Clock-In Admin Dashboard</h1>
+  <div class="note">
+    Showing the 100 most recent shifts. Open shifts are highlighted in red.
+  </div>
+
+  {% if shifts %}
+    <table>
+      <thead>
+        <tr>
+          <th>Shift ID</th>
+          <th>Employee</th>
+          <th>Store</th>
+          <th>Clock In</th>
+          <th>Clock Out</th>
+          <th>Status</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in shifts %}
+        <tr>
+          <td>{{ s.id }}</td>
+          <td>{{ s.employee_name }}</td>
+          <td>{{ s.store_name }}</td>
+          <td>{{ s.clock_in_time }}</td>
+          <td>
+            {% if s.clock_out_time %}
+              {{ s.clock_out_time }}
+            {% else %}
+              ---
+            {% endif %}
+          </td>
+          <td class="status-{{ s.status }}">
+            {{ s.status | upper }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  {% else %}
+    <p>No shifts found yet.</p>
+  {% endif %}
+</body>
+</html>
