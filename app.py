@@ -132,7 +132,7 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-def shift_hours(shift: Shift) -> float:
+def shift_hours(shift: "Shift") -> float:
     if not shift.clock_in or not shift.clock_out:
         return 0.0
     seconds = (shift.clock_out - shift.clock_in).total_seconds()
@@ -164,13 +164,29 @@ def admin_guard():
 
 
 # -----------------------------
-# Employee Clock Page (UPDATED)
+# Fingerprint (DEBUG)
+# - Use this to confirm Render is running THIS code
+# -----------------------------
+@app.get("/__fingerprint__")
+def fingerprint():
+    return "clockin_app LIVE fingerprint 2025-12-18"
+
+
+# -----------------------------
+# Optional: favicon to avoid log noise
+# -----------------------------
+@app.get("/favicon.ico")
+def favicon():
+    return ("", 204)
+
+
+# -----------------------------
+# Employee Clock Page
 # - passes all stores so employee UI can autocomplete Store Code
 # -----------------------------
 @app.get("/employee")
 def employee_page():
     stores = Store.query.order_by(Store.name.asc()).all()
-    # Only pass minimal safe fields
     stores_min = [{"name": s.name, "code": s.qr_token} for s in stores]
     return render_template("employee_clock.html", stores=stores_min)
 
@@ -530,14 +546,6 @@ def admin_payroll():
 @app.get("/")
 def index():
     return redirect(url_for("employee_page"))
-
-
-# -----------------------------
-# Health (optional)
-# -----------------------------
-@app.get("/health")
-def health():
-    return "Clock-in system running."
 
 
 # -----------------------------
