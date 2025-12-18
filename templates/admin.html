@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block title %}Admin Dashboard{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div class="h1">Dashboard</div>
+    <div class="muted">Quick snapshot of your system.</div>
+  </div>
+
+  <div style="height:14px;"></div>
+
+  <div class="grid grid-3">
+    <div class="card">
+      <div class="muted">Total employees</div>
+      <div style="font-size:28px; font-weight:800;">{{ total_employees }}</div>
+    </div>
+    <div class="card">
+      <div class="muted">Active employees</div>
+      <div style="font-size:28px; font-weight:800;">{{ active_employees }}</div>
+    </div>
+    <div class="card">
+      <div class="muted">Inactive employees</div>
+      <div style="font-size:28px; font-weight:800;">{{ inactive_employees }}</div>
+    </div>
+  </div>
+
+  <div style="height:14px;"></div>
+
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="h1" style="margin:0;">Next actions</div>
+        <div class="muted">Most common admin tasks.</div>
+      </div>
+      <div class="row">
+        <a class="btn btn-primary" href="/admin/employees">Manage employees</a>
+      </div>
+    </div>
+  </div>
+{% endblock %}

@@ -1,0 +1,56 @@
+{% extends "base_admin.html" %}
+{% set title = "Shifts" %}
+{% block content %}
+
+<h2 class="mb-3">Shifts</h2>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr>
+            <th>Status</th>
+            <th>Employee</th>
+            <th>Store</th>
+            <th>Clock In</th>
+            <th>Clock Out</th>
+            <th>Hours</th>
+            <th style="width: 150px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in shifts %}
+          <tr>
+            <td>
+              {% if s.clock_out %}
+                <span class="badge text-bg-secondary">Closed</span>
+              {% else %}
+                <span class="badge text-bg-success">Open</span>
+              {% endif %}
+            </td>
+            <td>{{ s.employee.name }}</td>
+            <td>{{ s.store.name }}</td>
+            <td>{{ fmt_dt(s.clock_in) }}</td>
+            <td>{{ fmt_dt(s.clock_out) }}</td>
+            <td>{{ "%.2f"|format(shift_hours(s)) }}</td>
+            <td>
+              {% if not s.clock_out %}
+              <form method="post" action="{{ url_for('admin_close_shift') }}" class="m-0">
+                <input type="hidden" name="shift_id" value="{{ s.id }}"/>
+                <button class="btn btn-sm btn-outline-dark" type="submit">Close Shift</button>
+              </form>
+              {% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+          {% if shifts|length == 0 %}
+          <tr><td colspan="7" class="text-muted">No shifts found.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

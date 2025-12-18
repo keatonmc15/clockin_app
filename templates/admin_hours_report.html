@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Hours Report{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2>Hours Report</h2>
+
+    <p><strong>{{ payroll_label }}</strong></p>
+    <p>{{ checks_label }}</p>
+
+    <p>Totals are based on <strong>clock-out date</strong> (closed shifts only).</p>
+
+    <form method="GET" action="/admin/reports/hours" style="display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+      <div style="min-width:220px;">
+        <label>Start date</label><br>
+        <input type="date" name="start" value="{{ start_date }}">
+      </div>
+      <div style="min-width:220px;">
+        <label>End date</label><br>
+        <input type="date" name="end" value="{{ end_date }}">
+      </div>
+      <div>
+        <button class="btn btn-primary" type="submit">Run Report</button>
+      </div>
+      <div>
+        <a class="btn" href="/admin/reports/hours?start={{ start_date }}&end={{ end_date }}&format=csv">Download CSV</a>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Totals</h3>
+
+    {% if rows|length == 0 %}
+      <p>No closed shifts found for this payroll week (or date range).</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th>Shifts</th>
+            <th>Hours</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+          <tr>
+            <td><strong>{{ r.employee_name }}</strong></td>
+            <td>{{ r.shift_count }}</td>
+            <td>{{ "%.2f"|format(r.hours) }}</td>
+          </tr>
+          {% endfor %}
+          <tr>
+            <td><strong>TOTAL</strong></td>
+            <td></td>
+            <td><strong>{{ "%.2f"|format(grand_total) }}</strong></td>
+          </tr>
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+{% endblock %}

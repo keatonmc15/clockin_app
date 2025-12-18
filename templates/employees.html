@@ -1,0 +1,72 @@
+{% extends "base_admin.html" %}
+{% set title = "Employees" %}
+{% block content %}
+
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h2 class="m-0">Employees</h2>
+</div>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <h5 class="mb-3">Add Employee</h5>
+    <form method="post" class="row g-2">
+      <input type="hidden" name="action" value="create"/>
+      <div class="col-md-5">
+        <input class="form-control" name="name" placeholder="Employee name" required>
+      </div>
+      <div class="col-md-3">
+        <input class="form-control" name="pin" placeholder="PIN (unique)" required>
+      </div>
+      <div class="col-md-2">
+        <button class="btn btn-dark w-100" type="submit">Create</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h5 class="mb-3">Employee List</h5>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>PIN</th>
+            <th>Status</th>
+            <th style="width: 140px;"></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for e in employees %}
+          <tr>
+            <td>{{ e.name }}</td>
+            <td>{{ e.pin }}</td>
+            <td>
+              {% if e.active %}
+                <span class="badge text-bg-success">Active</span>
+              {% else %}
+                <span class="badge text-bg-secondary">Inactive</span>
+              {% endif %}
+            </td>
+            <td>
+              <form method="post" class="m-0">
+                <input type="hidden" name="action" value="toggle_active"/>
+                <input type="hidden" name="employee_id" value="{{ e.id }}"/>
+                <button class="btn btn-sm btn-outline-dark" type="submit">
+                  {% if e.active %}Deactivate{% else %}Activate{% endif %}
+                </button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+          {% if employees|length == 0 %}
+          <tr><td colspan="4" class="text-muted">No employees yet.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

@@ -1,0 +1,47 @@
+{% extends "base_admin.html" %}
+{% set title = "Admin Dashboard" %}
+{% block content %}
+
+<div class="row g-3">
+  <div class="col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="text-muted">Open Shifts</div>
+        <div class="display-6">{{ open_shifts }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="text-muted">Employees</div>
+        <div class="display-6">{{ employees }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="text-muted">Stores</div>
+        <div class="display-6">{{ stores }}</div>
+      </div>
+    </div>
+  </div>
+  <div class="col-md-3">
+    <div class="card shadow-sm">
+      <div class="card-body">
+        <div class="text-muted">Shifts (7 days)</div>
+        <div class="display-6">{{ shifts_7d }}</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="mt-4 d-flex flex-wrap gap-2">
+  <a class="btn btn-dark" href="{{ url_for('admin_employees') }}">Manage Employees</a>
+  <a class="btn btn-dark" href="{{ url_for('admin_stores') }}">Manage Stores</a>
+  <a class="btn btn-dark" href="{{ url_for('admin_shifts') }}">View Shifts</a>
+  <a class="btn btn-dark" href="{{ url_for('admin_payroll') }}">Payroll Report</a>
+</div>
+
+{% endblock %}

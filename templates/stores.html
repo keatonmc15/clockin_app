@@ -1,0 +1,70 @@
+{% extends "base_admin.html" %}
+{% set title = "Stores" %}
+{% block content %}
+
+<h2 class="mb-3">Stores</h2>
+
+<div class="card shadow-sm mb-4">
+  <div class="card-body">
+    <h5 class="mb-3">Add Store</h5>
+    <form method="post" class="row g-2">
+      <input type="hidden" name="action" value="create"/>
+      <div class="col-md-3">
+        <input class="form-control" name="name" placeholder="Store name" required>
+      </div>
+      <div class="col-md-3">
+        <input class="form-control" name="qr_token" placeholder="QR token (unique)" required>
+      </div>
+      <div class="col-md-2">
+        <input class="form-control" name="latitude" placeholder="Latitude" required>
+      </div>
+      <div class="col-md-2">
+        <input class="form-control" name="longitude" placeholder="Longitude" required>
+      </div>
+      <div class="col-md-1">
+        <input class="form-control" name="geofence_radius_m" placeholder="m" value="150">
+      </div>
+      <div class="col-md-1">
+        <button class="btn btn-dark w-100" type="submit">Add</button>
+      </div>
+    </form>
+    <div class="text-muted mt-2" style="font-size: 0.9rem;">
+      Radius is in meters. Typical: 100–200m.
+    </div>
+  </div>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h5 class="mb-3">Store List</h5>
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>QR Token</th>
+            <th>Latitude</th>
+            <th>Longitude</th>
+            <th>Radius (m)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in stores %}
+          <tr>
+            <td>{{ s.name }}</td>
+            <td><code>{{ s.qr_token }}</code></td>
+            <td>{{ "%.6f"|format(s.latitude) }}</td>
+            <td>{{ "%.6f"|format(s.longitude) }}</td>
+            <td>{{ s.geofence_radius_m }}</td>
+          </tr>
+          {% endfor %}
+          {% if stores|length == 0 %}
+          <tr><td colspan="5" class="text-muted">No stores yet.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+{% endblock %}

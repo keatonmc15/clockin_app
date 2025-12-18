@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Clock-In Admin{% endblock %}</title>
+
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      background: #f6f7fb;
+      color: #111;
+    }
+
+    header {
+      background: #111827;
+      color: #ffffff;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    header .brand {
+      font-weight: bold;
+      font-size: 18px;
+    }
+
+    header nav a {
+      color: #ffffff;
+      text-decoration: none;
+      margin-left: 16px;
+      font-size: 14px;
+    }
+
+    header nav a:hover {
+      text-decoration: underline;
+    }
+
+    main {
+      max-width: 1000px;
+      margin: 20px auto;
+      padding: 0 20px;
+    }
+
+    .card {
+      background: #ffffff;
+      border: 1px solid #e5e7eb;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 16px;
+    }
+
+    .btn {
+      padding: 8px 12px;
+      border: 1px solid #d1d5db;
+      background: #ffffff;
+      border-radius: 8px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+
+    .btn-primary {
+      background: #2563eb;
+      color: white;
+      border-color: #2563eb;
+    }
+
+    .btn-danger {
+      background: #dc2626;
+      color: white;
+      border-color: #dc2626;
+    }
+
+    .btn-ok {
+      background: #16a34a;
+      color: white;
+      border-color: #16a34a;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    th, td {
+      border-bottom: 1px solid #e5e7eb;
+      padding: 10px;
+      text-align: left;
+    }
+
+    th {
+      background: #f3f4f6;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .flash {
+      padding: 10px;
+      border-radius: 8px;
+      margin-bottom: 12px;
+      font-size: 14px;
+    }
+
+    .flash.success {
+      background: #dcfce7;
+      border: 1px solid #86efac;
+    }
+
+    .flash.error {
+      background: #fee2e2;
+      border: 1px solid #fca5a5;
+    }
+
+    input {
+      padding: 8px 10px;
+      width: 100%;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+
+    code {
+      background: #f3f4f6;
+      padding: 2px 6px;
+      border-radius: 6px;
+      font-size: 13px;
+    }
+  </style>
+</head>
+
+<body>
+  <header>
+    <div class="brand">Clock-In Admin</div>
+    <nav>
+      <a href="/admin">Dashboard</a>
+      <a href="/admin/employees">Employees</a>
+      <a href="/admin/shifts">Shifts</a>
+	  <a href="/admin/reports/hours">Reports</a>
+      <a href="/admin/logout">Logout</a>
+    </nav>
+  </header>
+
+  <main>
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, message in messages %}
+          <div class="flash {{ category }}">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <script>
+    function copyText(text) {
+      navigator.clipboard.writeText(text);
+      alert("Copied!");
+    }
+  </script>
+</body>
+</html>
