@@ -1,5 +1,6 @@
-Flask
-gunicorn
-Flask-SQLAlchemy
-Flask-Migrate
-psycopg[binary]
+Flask==3.0.0
+Flask-SQLAlchemy==3.1.1
+Flask-Migrate==4.0.7
+Werkzeug==3.0.1
+gunicorn==21.2.0
+psycopg[binary]==3.2.9
