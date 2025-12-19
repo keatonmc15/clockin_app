@@ -52,6 +52,11 @@
           <div id="storeName" class="tiny muted mt-1"></div>
         </div>
 
+        <!-- Visible warning when clocked in -->
+        <div id="leaveWarning" class="alert alert-warning status-box mt-3 mb-0 tiny d-none" role="alert">
+          <strong>You are CLOCKED IN.</strong> Please clock out before leaving or closing this page.
+        </div>
+
         <div class="d-grid gap-2 mt-3">
           <button class="btn btn-dark big-btn" onclick="doClockIn()">Clock In</button>
           <button class="btn btn-outline-dark big-btn" onclick="doClockOut()">Clock Out</button>
@@ -72,11 +77,35 @@
 <script>
   const STORES = {{ stores|tojson }};
 
+  // Track whether this device is currently clocked in (for leave warning)
+  let IS_CLOCKED_IN = (localStorage.getItem("is_clocked_in") === "true");
+
   function setStatus(msg, kind="light") {
     const el = document.getElementById("status");
     el.className = `alert alert-${kind} status-box mt-3 mb-0 tiny`;
     el.textContent = msg;
   }
+
+  function setClockedIn(flag) {
+    IS_CLOCKED_IN = !!flag;
+    localStorage.setItem("is_clocked_in", IS_CLOCKED_IN ? "true" : "false");
+
+    const warn = document.getElementById("leaveWarning");
+    if (IS_CLOCKED_IN) {
+      warn.classList.remove("d-none");
+    } else {
+      warn.classList.add("d-none");
+    }
+  }
+
+  // Warn user if they try to leave while clocked in
+  window.addEventListener("beforeunload", (e) => {
+    if (!IS_CLOCKED_IN) return;
+
+    // Most browsers show a generic message (custom text is ignored)
+    e.preventDefault();
+    e.returnValue = "";
+  });
 
   function updateStoreName() {
     const code = (document.getElementById("store_code").value || "").trim();
@@ -89,6 +118,12 @@
     const saved = localStorage.getItem("last_store_code");
     if (saved) document.getElementById("store_code").value = saved;
     updateStoreName();
+
+    // Restore clocked-in warning on page load if set
+    setClockedIn(IS_CLOCKED_IN);
+    if (IS_CLOCKED_IN) {
+      setStatus("You appear to be CLOCKED IN on this device. Clock out before leaving this page.", "warning");
+    }
   });
 
   document.getElementById("store_code").addEventListener("input", () => {
@@ -131,6 +166,7 @@
     if (!res.ok) return setStatus(data.error || "Clock-in failed.", "danger");
 
     setStatus(data.message || "Clock-in successful.", "success");
+    setClockedIn(true);
   }
 
   async function doClockOut() {
@@ -157,6 +193,7 @@
 
     const hours = (data.hours !== undefined) ? ` Hours: ${data.hours}` : "";
     setStatus((data.message || "Clock-out successful.") + hours, "success");
+    setClockedIn(false);
   }
 </script>
 </body>
