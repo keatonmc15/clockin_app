@@ -1,6 +1,8 @@
 import os
 import math
 import logging
+import csv
+from io import TextIOWrapper
 from datetime import datetime, timedelta, time as dtime
 
 from flask import (
@@ -9,7 +11,7 @@ from flask import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import func  # <-- ADD THIS
+from sqlalchemy import func
 
 # -----------------------------
 # Timezone (Windows-safe)
@@ -179,16 +181,11 @@ def admin_guard():
         return redirect(url_for("admin_login"))
     return None
 
+# ✅ Canonical store codes = lowercase
 def normalize_store_code(val: str) -> str:
-    """
-    Normalize store codes so we can store consistently and match regardless of case.
-    """
-    return (val or "").strip().upper()
+    return (val or "").strip().lower()
 
 def log_event(event: str, **fields):
-    """
-    Single-line structured logs for Render (distance-only; no GPS coordinates).
-    """
     parts = [f"{k}={fields[k]}" for k in sorted(fields.keys())]
     app.logger.info("%s %s", event, " ".join(parts))
 
@@ -215,6 +212,7 @@ def favicon():
 @app.get("/employee")
 def employee_page():
     stores = Store.query.order_by(Store.name.asc()).all()
+    # send codes as stored (now canonical lowercase)
     stores_min = [{"name": s.name, "code": s.qr_token} for s in stores]
     return render_template("employee_clock.html", stores=stores_min)
 
@@ -228,7 +226,7 @@ def api_clockin():
 
     pin = (data.get("pin") or "").strip()
     qr_token_raw = (data.get("qr_token") or "").strip()
-    qr_token = normalize_store_code(qr_token_raw)  # normalize incoming
+    qr_token = normalize_store_code(qr_token_raw)
     lat = data.get("lat")
     lng = data.get("lng")
 
@@ -239,8 +237,8 @@ def api_clockin():
     if not emp or not emp.active:
         return jsonify({"error": "Invalid or inactive employee."}), 403
 
-    # Case-insensitive store lookup (fixes lowercase vs uppercase mismatch)
-    store = Store.query.filter(func.upper(Store.qr_token) == qr_token).first()
+    # ✅ case-insensitive match using lower()
+    store = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
     if not store:
         log_event("CLOCKIN_DENY_INVALID_STORE", employee_pin=pin, store_code=qr_token)
         return jsonify({"error": "Invalid store code."}), 404
@@ -263,7 +261,6 @@ def api_clockin():
 
     dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
 
-    # Distance-only server log (no lat/lng)
     log_event(
         "CLOCKIN_ATTEMPT",
         employee_id=emp.id,
@@ -371,7 +368,6 @@ def api_clockout():
     db.session.commit()
 
     hours = shift_hours(open_shift)
-
     log_event("CLOCKOUT_OK", employee_id=emp.id, shift_id=open_shift.id, hours=round(hours, 2))
 
     return jsonify({
@@ -430,6 +426,144 @@ def admin_dashboard():
         shifts_7d=shifts_7d,
     )
 
+# -------- Bulk Import (stores + employees) --------
+@app.route("/admin/import", methods=["GET", "POST"])
+def admin_import():
+    guard = admin_guard()
+    if guard: return guard
+
+    results = None
+
+    if request.method == "POST":
+        stores_file = request.files.get("stores_file")
+        employees_file = request.files.get("employees_file")
+
+        created_stores = 0
+        skipped_stores = 0
+        store_errors = []
+
+        created_emps = 0
+        skipped_emps = 0
+        emp_errors = []
+
+        # ---------- Import STORES ----------
+        if stores_file and stores_file.filename:
+            try:
+                reader = csv.DictReader(TextIOWrapper(stores_file.stream, encoding="utf-8"))
+                required = {"name", "qr_token", "latitude", "longitude", "geofence_radius_m"}
+                missing_cols = required - set((reader.fieldnames or []))
+
+                if missing_cols:
+                    store_errors.append(f"Stores CSV missing columns: {', '.join(sorted(missing_cols))}")
+                else:
+                    for i, row in enumerate(reader, start=2):
+                        try:
+                            name = (row.get("name") or "").strip()
+                            qr_token = normalize_store_code(row.get("qr_token") or "")
+                            lat = row.get("latitude")
+                            lng = row.get("longitude")
+                            radius = row.get("geofence_radius_m") or "150"
+
+                            if not name or not qr_token or lat is None or lng is None:
+                                skipped_stores += 1
+                                store_errors.append(f"Stores row {i}: missing name/code/lat/lng")
+                                continue
+
+                            lat = float(lat)
+                            lng = float(lng)
+                            radius = int(float(radius))
+
+                            # ✅ case-insensitive duplicate check
+                            existing = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
+                            if existing:
+                                skipped_stores += 1
+                                continue
+
+                            s = Store(
+                                name=name,
+                                qr_token=qr_token,
+                                latitude=lat,
+                                longitude=lng,
+                                geofence_radius_m=radius
+                            )
+                            db.session.add(s)
+                            created_stores += 1
+
+                        except Exception as e:
+                            skipped_stores += 1
+                            store_errors.append(f"Stores row {i}: {e}")
+
+                    db.session.commit()
+
+            except Exception as e:
+                store_errors.append(str(e))
+
+        # ---------- Import EMPLOYEES ----------
+        if employees_file and employees_file.filename:
+            try:
+                reader = csv.DictReader(TextIOWrapper(employees_file.stream, encoding="utf-8"))
+                required = {"name", "pin"}
+                missing_cols = required - set((reader.fieldnames or []))
+
+                if missing_cols:
+                    emp_errors.append(f"Employees CSV missing columns: {', '.join(sorted(missing_cols))}")
+                else:
+                    for i, row in enumerate(reader, start=2):
+                        try:
+                            name = (row.get("name") or "").strip()
+                            pin = (row.get("pin") or "").strip()
+                            active_raw = (row.get("active") or "1").strip().lower()
+
+                            if not name or not pin:
+                                skipped_emps += 1
+                                emp_errors.append(f"Employees row {i}: missing name or pin")
+                                continue
+
+                            active = active_raw not in ("0", "false", "no", "n")
+
+                            if Employee.query.filter_by(pin=pin).first():
+                                skipped_emps += 1
+                                continue
+
+                            e = Employee(name=name, pin=pin, active=active)
+                            db.session.add(e)
+                            created_emps += 1
+
+                        except Exception as e:
+                            skipped_emps += 1
+                            emp_errors.append(f"Employees row {i}: {e}")
+
+                    db.session.commit()
+
+            except Exception as e:
+                emp_errors.append(str(e))
+
+        results = {
+            "created_stores": created_stores,
+            "skipped_stores": skipped_stores,
+            "store_errors": store_errors[:50],
+            "created_emps": created_emps,
+            "skipped_emps": skipped_emps,
+            "emp_errors": emp_errors[:50],
+        }
+
+        flash(
+            f"Import done. Stores: +{created_stores} (skipped {skipped_stores}). "
+            f"Employees: +{created_emps} (skipped {skipped_emps}).",
+            "success"
+        )
+
+        log_event(
+            "ADMIN_IMPORT",
+            created_stores=created_stores,
+            skipped_stores=skipped_stores,
+            created_employees=created_emps,
+            skipped_employees=skipped_emps
+        )
+
+    return render_template("import.html", results=results)
+
+
 @app.route("/admin/employees", methods=["GET", "POST"])
 def admin_employees():
     guard = admin_guard()
@@ -464,6 +598,61 @@ def admin_employees():
     employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
     return render_template("employees.html", employees=employees)
 
+# ---- NEW: Employee update/delete ----
+@app.post("/admin/employees/update")
+def admin_employees_update():
+    guard = admin_guard()
+    if guard: return guard
+
+    emp_id = request.form.get("employee_id")
+    name = (request.form.get("name") or "").strip()
+    pin = (request.form.get("pin") or "").strip()
+    active = (request.form.get("active") or "0") == "1"
+
+    emp = Employee.query.get(emp_id)
+    if not emp:
+        flash("Employee not found.", "danger")
+        return redirect(url_for("admin_employees"))
+
+    if not name or not pin:
+        flash("Name and PIN required.", "danger")
+        return redirect(url_for("admin_employees"))
+
+    other = Employee.query.filter(Employee.pin == pin, Employee.id != emp.id).first()
+    if other:
+        flash("That PIN is already in use.", "danger")
+        return redirect(url_for("admin_employees"))
+
+    emp.name = name
+    emp.pin = pin
+    emp.active = active
+    db.session.commit()
+
+    flash("Employee updated.", "success")
+    return redirect(url_for("admin_employees"))
+
+@app.post("/admin/employees/delete")
+def admin_employees_delete():
+    guard = admin_guard()
+    if guard: return guard
+
+    emp_id = request.form.get("employee_id")
+    emp = Employee.query.get(emp_id)
+    if not emp:
+        flash("Employee not found.", "danger")
+        return redirect(url_for("admin_employees"))
+
+    shift_count = Shift.query.filter_by(employee_id=emp.id).count()
+    if shift_count > 0:
+        flash("Cannot delete employee with shift history. Deactivate instead.", "warning")
+        return redirect(url_for("admin_employees"))
+
+    db.session.delete(emp)
+    db.session.commit()
+    flash("Employee deleted.", "success")
+    return redirect(url_for("admin_employees"))
+
+
 @app.route("/admin/stores", methods=["GET", "POST"])
 def admin_stores():
     guard = admin_guard()
@@ -475,7 +664,7 @@ def admin_stores():
         if action == "create":
             name = (request.form.get("name") or "").strip()
             qr_token_raw = (request.form.get("qr_token") or "")
-            qr_token = normalize_store_code(qr_token_raw)  # normalize before storing
+            qr_token = normalize_store_code(qr_token_raw)
             lat = request.form.get("latitude")
             lng = request.form.get("longitude")
             radius = request.form.get("geofence_radius_m") or "150"
@@ -486,18 +675,17 @@ def admin_stores():
                 try:
                     lat = float(lat)
                     lng = float(lng)
-                    radius = int(radius)
+                    radius = int(float(radius))
                 except ValueError:
                     flash("Invalid lat/lng/radius.", "danger")
                 else:
-                    # Case-insensitive uniqueness check
-                    existing = Store.query.filter(func.upper(Store.qr_token) == qr_token).first()
+                    existing = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
                     if existing:
                         flash("Store code already in use.", "danger")
                     else:
                         s = Store(
                             name=name,
-                            qr_token=qr_token,  # store in normalized format (UPPER)
+                            qr_token=qr_token,
                             latitude=lat,
                             longitude=lng,
                             geofence_radius_m=radius
@@ -508,6 +696,73 @@ def admin_stores():
 
     stores = Store.query.order_by(Store.name.asc()).all()
     return render_template("stores.html", stores=stores)
+
+# ---- NEW: Store update/delete ----
+@app.post("/admin/stores/update")
+def admin_stores_update():
+    guard = admin_guard()
+    if guard: return guard
+
+    store_id = request.form.get("store_id")
+    name = (request.form.get("name") or "").strip()
+    qr_token = normalize_store_code(request.form.get("qr_token") or "")
+    lat = request.form.get("latitude")
+    lng = request.form.get("longitude")
+    radius = request.form.get("geofence_radius_m") or "150"
+
+    store = Store.query.get(store_id)
+    if not store:
+        flash("Store not found.", "danger")
+        return redirect(url_for("admin_stores"))
+
+    if not name or not qr_token or not lat or not lng:
+        flash("Name, store code, latitude, and longitude required.", "danger")
+        return redirect(url_for("admin_stores"))
+
+    try:
+        lat = float(lat)
+        lng = float(lng)
+        radius = int(float(radius))
+    except ValueError:
+        flash("Invalid lat/lng/radius.", "danger")
+        return redirect(url_for("admin_stores"))
+
+    existing = Store.query.filter(func.lower(Store.qr_token) == qr_token, Store.id != store.id).first()
+    if existing:
+        flash("Store code already in use.", "danger")
+        return redirect(url_for("admin_stores"))
+
+    store.name = name
+    store.qr_token = qr_token
+    store.latitude = lat
+    store.longitude = lng
+    store.geofence_radius_m = radius
+    db.session.commit()
+
+    flash("Store updated.", "success")
+    return redirect(url_for("admin_stores"))
+
+@app.post("/admin/stores/delete")
+def admin_stores_delete():
+    guard = admin_guard()
+    if guard: return guard
+
+    store_id = request.form.get("store_id")
+    store = Store.query.get(store_id)
+    if not store:
+        flash("Store not found.", "danger")
+        return redirect(url_for("admin_stores"))
+
+    shift_count = Shift.query.filter_by(store_id=store.id).count()
+    if shift_count > 0:
+        flash("Cannot delete store with shift history.", "warning")
+        return redirect(url_for("admin_stores"))
+
+    db.session.delete(store)
+    db.session.commit()
+    flash("Store deleted.", "success")
+    return redirect(url_for("admin_stores"))
+
 
 @app.get("/admin/shifts")
 def admin_shifts():
@@ -541,7 +796,6 @@ def admin_close_shift():
     flash("Shift closed.", "success")
     return redirect(url_for("admin_shifts"))
 
-# --- NEW: Admin force close with reason (audit trail) ---
 @app.post("/admin/shifts/force_close")
 def admin_force_close_shift():
     guard = admin_guard()
@@ -622,7 +876,6 @@ def admin_payroll():
     grand_total = round(sum(totals_by_emp.values()), 2)
 
     if out_format == "csv":
-        import csv
         from io import StringIO
 
         si = StringIO()
