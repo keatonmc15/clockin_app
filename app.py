@@ -8,6 +8,7 @@ from flask import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
+from sqlalchemy import func  # <-- ADD THIS
 
 # -----------------------------
 # Timezone (Windows-safe)
@@ -174,6 +175,12 @@ def admin_guard():
         return redirect(url_for("admin_login"))
     return None
 
+def normalize_store_code(val: str) -> str:
+    """
+    Normalize store codes so we can store consistently and match regardless of case.
+    """
+    return (val or "").strip().upper()
+
 
 # -----------------------------
 # Fingerprint (DEBUG)
@@ -209,7 +216,8 @@ def api_clockin():
     data = request.get_json(force=True, silent=True) or {}
 
     pin = (data.get("pin") or "").strip()
-    qr_token = (data.get("qr_token") or "").strip()
+    qr_token_raw = (data.get("qr_token") or "").strip()
+    qr_token = normalize_store_code(qr_token_raw)  # normalize incoming
     lat = data.get("lat")
     lng = data.get("lng")
 
@@ -220,7 +228,8 @@ def api_clockin():
     if not emp or not emp.active:
         return jsonify({"error": "Invalid or inactive employee."}), 403
 
-    store = Store.query.filter_by(qr_token=qr_token).first()
+    # Case-insensitive store lookup (fixes lowercase vs uppercase mismatch)
+    store = Store.query.filter(func.upper(Store.qr_token) == qr_token).first()
     if not store:
         return jsonify({"error": "Invalid store code."}), 404
 
@@ -401,7 +410,8 @@ def admin_stores():
 
         if action == "create":
             name = (request.form.get("name") or "").strip()
-            qr_token = (request.form.get("qr_token") or "").strip()
+            qr_token_raw = (request.form.get("qr_token") or "")
+            qr_token = normalize_store_code(qr_token_raw)  # normalize before storing
             lat = request.form.get("latitude")
             lng = request.form.get("longitude")
             radius = request.form.get("geofence_radius_m") or "150"
@@ -416,12 +426,14 @@ def admin_stores():
                 except ValueError:
                     flash("Invalid lat/lng/radius.", "danger")
                 else:
-                    if Store.query.filter_by(qr_token=qr_token).first():
+                    # Case-insensitive uniqueness check
+                    existing = Store.query.filter(func.upper(Store.qr_token) == qr_token).first()
+                    if existing:
                         flash("Store code already in use.", "danger")
                     else:
                         s = Store(
                             name=name,
-                            qr_token=qr_token,
+                            qr_token=qr_token,  # store in normalized format (UPPER)
                             latitude=lat,
                             longitude=lng,
                             geofence_radius_m=radius
