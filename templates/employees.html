@@ -4,6 +4,7 @@
 
 <div class="d-flex align-items-center justify-content-between mb-3">
   <h2 class="m-0">Employees</h2>
+  <a class="btn btn-outline-secondary btn-sm" href="/admin/import">Bulk Import</a>
 </div>
 
 <div class="card shadow-sm mb-4">
@@ -26,40 +27,70 @@
 
 <div class="card shadow-sm">
   <div class="card-body">
-    <h5 class="mb-3">Employee List</h5>
+    <h5 class="mb-2">Employee List</h5>
+    <div class="text-muted mb-3" style="font-size: 0.9rem;">
+      Tip: Edit inline and click <strong>Save</strong>. Delete is blocked if the employee has payroll history.
+    </div>
+
     <div class="table-responsive">
       <table class="table table-sm align-middle">
         <thead>
           <tr>
-            <th>Name</th>
-            <th>PIN</th>
-            <th>Status</th>
-            <th style="width: 140px;"></th>
+            <th style="min-width: 220px;">Name</th>
+            <th style="min-width: 120px;">PIN</th>
+            <th style="min-width: 140px;">Status</th>
+            <th style="min-width: 180px;" class="text-end">Actions</th>
           </tr>
         </thead>
         <tbody>
           {% for e in employees %}
           <tr>
-            <td>{{ e.name }}</td>
-            <td>{{ e.pin }}</td>
-            <td>
-              {% if e.active %}
-                <span class="badge text-bg-success">Active</span>
-              {% else %}
-                <span class="badge text-bg-secondary">Inactive</span>
-              {% endif %}
-            </td>
-            <td>
-              <form method="post" class="m-0">
-                <input type="hidden" name="action" value="toggle_active"/>
-                <input type="hidden" name="employee_id" value="{{ e.id }}"/>
-                <button class="btn btn-sm btn-outline-dark" type="submit">
-                  {% if e.active %}Deactivate{% else %}Activate{% endif %}
-                </button>
-              </form>
-            </td>
+            <form method="post" action="/admin/employees/update" class="row g-0">
+              <input type="hidden" name="employee_id" value="{{ e.id }}"/>
+
+              <td>
+                <input
+                  class="form-control form-control-sm"
+                  name="name"
+                  value="{{ e.name }}"
+                  required
+                >
+              </td>
+
+              <td>
+                <input
+                  class="form-control form-control-sm font-monospace"
+                  name="pin"
+                  value="{{ e.pin }}"
+                  required
+                >
+              </td>
+
+              <td>
+                <select class="form-select form-select-sm" name="active">
+                  <option value="1" {% if e.active %}selected{% endif %}>Active</option>
+                  <option value="0" {% if not e.active %}selected{% endif %}>Inactive</option>
+                </select>
+              </td>
+
+              <td class="text-end">
+                <button class="btn btn-sm btn-dark" type="submit">Save</button>
+            </form>
+
+                <form method="post" action="/admin/employees/delete" class="d-inline">
+                  <input type="hidden" name="employee_id" value="{{ e.id }}"/>
+                  <button
+                    class="btn btn-sm btn-outline-danger"
+                    type="submit"
+                    onclick="return confirm('Delete employee: {{ e.name }}? This is blocked if they have any shift history.')"
+                  >
+                    Delete
+                  </button>
+                </form>
+              </td>
           </tr>
           {% endfor %}
+
           {% if employees|length == 0 %}
           <tr><td colspan="4" class="text-muted">No employees yet.</td></tr>
           {% endif %}
