@@ -30,19 +30,27 @@
         <h2 class="mb-1">Employee Time Clock</h2>
         <div class="muted mb-3">Enter your PIN and Store Code.</div>
 
+        <!-- CLOCKED-IN BANNER -->
+        <div id="clockedBanner" class="alert alert-success status-box tiny d-none" role="alert">
+          <div class="fw-semibold">CLOCKED IN: <span id="clockedName">Employee</span></div>
+          <div class="tiny">Come back here to clock out when your shift ends.</div>
+        </div>
+
         <div class="mb-3">
-          <label class="form-label">PIN</label>
+          <label class="form-label" for="pin">PIN</label>
           <input id="pin" class="form-control form-control-lg" inputmode="numeric" placeholder="Enter your PIN" />
         </div>
 
         <div class="mb-2">
-          <label class="form-label">Store Code</label>
+          <label class="form-label" for="store_code">Store Code</label>
           <input
             id="store_code"
             class="form-control form-control-lg"
             placeholder="Start typing store name or code…"
             list="storeList"
             autocomplete="off"
+            autocapitalize="characters"
+            spellcheck="false"
           />
           <datalist id="storeList">
             {% for s in stores %}
@@ -52,11 +60,6 @@
           <div id="storeName" class="tiny muted mt-1"></div>
         </div>
 
-        <!-- Banner shown only when clocked in -->
-        <div id="clockedInBanner" class="alert alert-warning status-box mt-3 mb-0 tiny d-none" role="alert">
-          <strong>You are CLOCKED IN.</strong> Please clock out before leaving or closing this page.
-        </div>
-
         <div class="d-grid gap-2 mt-3">
           <button id="btnClockIn" class="btn btn-dark big-btn" onclick="doClockIn()">Clock In</button>
           <button id="btnClockOut" class="btn btn-outline-dark big-btn" onclick="doClockOut()">Clock Out</button>
@@ -64,6 +67,16 @@
 
         <div id="status" class="alert alert-light status-box mt-3 mb-0 tiny" role="alert">
           Ready.
+        </div>
+
+        <!-- GPS DEBUG LINE (employee-friendly + helps you troubleshoot) -->
+        <div class="mt-2 tiny muted">
+          <div><span class="fw-semibold">GPS:</span> <span id="gpsPerm">—</span></div>
+          <div>
+            <span class="fw-semibold">Accuracy:</span>
+            <span id="gpsAcc">—</span>
+            <span id="gpsTime" class="ms-2"></span>
+          </div>
         </div>
 
       </div>
@@ -77,8 +90,32 @@
 <script>
   const STORES = {{ stores|tojson }};
 
-  // Track whether this device is currently clocked in (for leave warning + button states)
-  let IS_CLOCKED_IN = (localStorage.getItem("is_clocked_in") === "true");
+  // ---- Local state keys ----
+  const LS_CLOCKED_IN = "clocked_in";
+  const LS_CLOCKED_NAME = "clocked_in_name";
+  const LS_CLOCKED_SHIFT_ID = "clocked_in_shift_id";
+  const LS_LAST_STORE = "last_store_code";
+
+  let BUSY = false;
+
+  function isClockedIn() {
+    return localStorage.getItem(LS_CLOCKED_IN) === "1";
+  }
+
+  function setClockedIn(on, payload = {}) {
+    if (on) {
+      localStorage.setItem(LS_CLOCKED_IN, "1");
+      if (payload.name) localStorage.setItem(LS_CLOCKED_NAME, payload.name);
+      if (payload.shift_id !== undefined && payload.shift_id !== null) {
+        localStorage.setItem(LS_CLOCKED_SHIFT_ID, String(payload.shift_id));
+      }
+    } else {
+      localStorage.removeItem(LS_CLOCKED_IN);
+      localStorage.removeItem(LS_CLOCKED_NAME);
+      localStorage.removeItem(LS_CLOCKED_SHIFT_ID);
+    }
+    updateUI();
+  }
 
   function setStatus(msg, kind="light") {
     const el = document.getElementById("status");
@@ -86,89 +123,199 @@
     el.textContent = msg;
   }
 
-  function updateButtonsAndBanner() {
-    const banner = document.getElementById("clockedInBanner");
-    const btnIn = document.getElementById("btnClockIn");
-    const btnOut = document.getElementById("btnClockOut");
+  // ---- GPS debug helpers ----
+  function setGpsInfo({ permText="—", accuracyM=null, ts=null } = {}) {
+    const permEl = document.getElementById("gpsPerm");
+    const accEl = document.getElementById("gpsAcc");
+    const timeEl = document.getElementById("gpsTime");
 
-    if (IS_CLOCKED_IN) {
-      banner.classList.remove("d-none");
-      btnIn.disabled = true;
-      btnOut.disabled = false;
+    permEl.textContent = permText;
+
+    if (accuracyM === null || accuracyM === undefined) {
+      accEl.textContent = "—";
     } else {
-      banner.classList.add("d-none");
-      btnIn.disabled = false;
-      btnOut.disabled = true;
+      accEl.textContent = `±${Math.round(accuracyM)} m`;
+    }
+
+    if (!ts) {
+      timeEl.textContent = "";
+    } else {
+      const d = new Date(ts);
+      timeEl.textContent = `(${d.toLocaleTimeString()})`;
     }
   }
 
-  function setClockedIn(flag) {
-    IS_CLOCKED_IN = !!flag;
-    localStorage.setItem("is_clocked_in", IS_CLOCKED_IN ? "true" : "false");
-    updateButtonsAndBanner();
+  async function refreshGpsPermission() {
+    if (!navigator.geolocation) {
+      setGpsInfo({ permText: "Not supported" });
+      return;
+    }
+
+    // Some browsers don’t support Permissions API reliably; handle gracefully.
+    if (!("permissions" in navigator) || !navigator.permissions.query) {
+      setGpsInfo({ permText: "Unknown" });
+      return;
+    }
+
+    try {
+      const perm = await navigator.permissions.query({ name: "geolocation" });
+      const label =
+        perm.state === "granted" ? "Allowed" :
+        perm.state === "denied"  ? "Denied" :
+        "Needs approval";
+
+      setGpsInfo({ permText: label });
+
+      // Update if user changes permission while page is open
+      perm.onchange = () => refreshGpsPermission();
+    } catch (e) {
+      setGpsInfo({ permText: "Unknown" });
+    }
   }
 
-  // Warn user if they try to leave while clocked in
-  window.addEventListener("beforeunload", (e) => {
-    if (!IS_CLOCKED_IN) return;
-    // Most browsers show a generic message (custom text is ignored)
-    e.preventDefault();
-    e.returnValue = "";
-  });
+  function updateGpsFromPosition(pos) {
+    setGpsInfo({
+      permText: "Allowed",
+      accuracyM: pos?.coords?.accuracy ?? null,
+      ts: pos?.timestamp ?? Date.now()
+    });
+  }
+
+  function normalizeStoreInput() {
+    const el = document.getElementById("store_code");
+    const raw = (el.value || "");
+    const norm = raw.trim().toUpperCase();
+    if (el.value !== norm) el.value = norm;
+    return norm;
+  }
 
   function updateStoreName() {
-    const code = (document.getElementById("store_code").value || "").trim();
-    const match = STORES.find(s => s.code === code);
+    const code = normalizeStoreInput();
+    const match = STORES.find(s => String(s.code).toUpperCase() === code);
     document.getElementById("storeName").textContent = match ? `Selected: ${match.name}` : "";
   }
 
-  // Remember last store code on this device
+  function setBusy(on, which="") {
+    BUSY = on;
+    const btnIn = document.getElementById("btnClockIn");
+    const btnOut = document.getElementById("btnClockOut");
+
+    btnIn.disabled = on || isClockedIn();
+    btnOut.disabled = on || !isClockedIn();
+
+    if (on) {
+      if (which === "in") btnIn.textContent = "Clocking in…";
+      if (which === "out") btnOut.textContent = "Clocking out…";
+    } else {
+      btnIn.textContent = "Clock In";
+      btnOut.textContent = "Clock Out";
+    }
+  }
+
+  function updateUI() {
+    const banner = document.getElementById("clockedBanner");
+    const clockedNameEl = document.getElementById("clockedName");
+
+    const pinInput = document.getElementById("pin");
+    const storeInput = document.getElementById("store_code");
+    const btnIn = document.getElementById("btnClockIn");
+    const btnOut = document.getElementById("btnClockOut");
+
+    const clocked = isClockedIn();
+    const name = localStorage.getItem(LS_CLOCKED_NAME) || "Employee";
+
+    // Banner
+    if (clocked) {
+      banner.classList.remove("d-none");
+      clockedNameEl.textContent = name;
+    } else {
+      banner.classList.add("d-none");
+    }
+
+    // Lock inputs when clocked in (and during busy)
+    pinInput.disabled = clocked || BUSY;
+    storeInput.disabled = clocked || BUSY;
+
+    // Buttons
+    btnIn.disabled = BUSY || clocked;
+    btnOut.disabled = BUSY || !clocked;
+
+    // Warn when leaving while clocked in
+    window.__shouldWarnOnLeave = clocked;
+  }
+
+  // Remember last store code on this device + init UI
   window.addEventListener("load", () => {
-    const saved = localStorage.getItem("last_store_code");
+    const saved = localStorage.getItem(LS_LAST_STORE);
     if (saved) document.getElementById("store_code").value = saved;
 
     updateStoreName();
-    updateButtonsAndBanner();
+    updateUI();
 
-    if (IS_CLOCKED_IN) {
-      setStatus("You appear to be CLOCKED IN on this device. Clock out before leaving this page.", "warning");
-    }
+    // GPS permission line
+    refreshGpsPermission();
+
+    // Optional: warm up a GPS fix so accuracy shows even before punching
+    // (If permission is denied or prompt, it will just fail silently)
+    getLocation().catch(() => {});
   });
 
   document.getElementById("store_code").addEventListener("input", () => {
     updateStoreName();
-    const code = (document.getElementById("store_code").value || "").trim();
-    if (code) localStorage.setItem("last_store_code", code);
+    const code = normalizeStoreInput();
+    if (code) localStorage.setItem(LS_LAST_STORE, code);
+  });
+
+  // Browser "Are you sure you want to leave?" popup while clocked in
+  window.addEventListener("beforeunload", (e) => {
+    if (!window.__shouldWarnOnLeave) return;
+    e.preventDefault();
+    e.returnValue = "";
   });
 
   function getLocation() {
     return new Promise((resolve, reject) => {
-      if (!navigator.geolocation) return reject(new Error("Geolocation not supported."));
+      if (!navigator.geolocation) {
+        setGpsInfo({ permText: "Not supported" });
+        return reject(new Error("Geolocation not supported."));
+      }
+
       navigator.geolocation.getCurrentPosition(
-        pos => resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude }),
-        err => reject(err),
+        pos => {
+          updateGpsFromPosition(pos);
+          resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
+        },
+        err => {
+          // Map common errors to the GPS line
+          if (err && err.code === 1) setGpsInfo({ permText: "Denied" });           // PERMISSION_DENIED
+          else if (err && err.code === 2) setGpsInfo({ permText: "Unavailable" }); // POSITION_UNAVAILABLE
+          else if (err && err.code === 3) setGpsInfo({ permText: "Timeout" });     // TIMEOUT
+          else setGpsInfo({ permText: "Error" });
+
+          reject(err);
+        },
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
       );
     });
   }
 
   async function doClockIn() {
-    if (IS_CLOCKED_IN) return; // safety
+    if (BUSY) return;
+    if (isClockedIn()) return setStatus("You are already clocked in.", "warning");
 
     const pin = (document.getElementById("pin").value || "").trim();
-    const qr_token = (document.getElementById("store_code").value || "").trim();
+    const qr_token = normalizeStoreInput();
 
     if (!pin) return setStatus("Enter your PIN.", "warning");
     if (!qr_token) return setStatus("Enter your Store Code.", "warning");
 
-    // Prevent double taps
-    document.getElementById("btnClockIn").disabled = true;
-
+    setBusy(true, "in");
     setStatus("Getting location...");
+
     let loc;
     try { loc = await getLocation(); }
     catch(e) {
-      document.getElementById("btnClockIn").disabled = false;
+      setBusy(false);
       return setStatus("Location failed. Turn on location services and try again.", "danger");
     }
 
@@ -181,31 +328,31 @@
 
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      document.getElementById("btnClockIn").disabled = false;
+      setBusy(false);
       return setStatus(data.error || "Clock-in failed.", "danger");
     }
 
+    setClockedIn(true, { name: data.employee || "", shift_id: data.shift_id });
     setStatus(data.message || "Clock-in successful.", "success");
-    setClockedIn(true);
+    setBusy(false);
   }
 
   async function doClockOut() {
-    if (!IS_CLOCKED_IN) return; // safety
+    if (BUSY) return;
 
     const pin = (document.getElementById("pin").value || "").trim();
-    const qr_token = (document.getElementById("store_code").value || "").trim();
+    const qr_token = normalizeStoreInput();
 
     if (!pin) return setStatus("Enter your PIN.", "warning");
     if (!qr_token) return setStatus("Enter your Store Code.", "warning");
 
-    // Prevent double taps
-    document.getElementById("btnClockOut").disabled = true;
-
+    setBusy(true, "out");
     setStatus("Getting location...");
+
     let loc;
     try { loc = await getLocation(); }
     catch(e) {
-      document.getElementById("btnClockOut").disabled = false;
+      setBusy(false);
       return setStatus("Location failed. Turn on location services and try again.", "danger");
     }
 
@@ -217,14 +364,24 @@
     });
 
     const data = await res.json().catch(() => ({}));
+
     if (!res.ok) {
-      document.getElementById("btnClockOut").disabled = false;
+      const msg = (data.error || "Clock-out failed.").toLowerCase();
+      if (msg.includes("no open shift")) {
+        setClockedIn(false);
+        setStatus("No open shift found. It may have been closed by an admin.", "warning");
+        setBusy(false);
+        return;
+      }
+      setBusy(false);
       return setStatus(data.error || "Clock-out failed.", "danger");
     }
 
+    setClockedIn(false);
+
     const hours = (data.hours !== undefined) ? ` Hours: ${data.hours}` : "";
     setStatus((data.message || "Clock-out successful.") + hours, "success");
-    setClockedIn(false);
+    setBusy(false);
   }
 </script>
 </body>

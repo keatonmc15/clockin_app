@@ -103,6 +103,12 @@ class Shift(db.Model):
     clock_out_lat = db.Column(db.Float, nullable=True)
     clock_out_lng = db.Column(db.Float, nullable=True)
 
+    # --- Admin override audit fields (B) ---
+    closed_by_admin = db.Column(db.Boolean, nullable=False, default=False)
+    admin_closed_by = db.Column(db.String(120), nullable=True)   # username
+    admin_closed_at = db.Column(db.DateTime, nullable=True)
+    admin_close_reason = db.Column(db.Text, nullable=True)
+
     created_at = db.Column(db.DateTime, default=lambda: now_tz())
 
     employee = db.relationship("Employee", backref="shifts")
@@ -171,7 +177,6 @@ def admin_guard():
 
 # -----------------------------
 # Fingerprint (DEBUG)
-# - Use this to confirm Render is running THIS code
 # -----------------------------
 @app.get("/__fingerprint__")
 def fingerprint():
@@ -179,7 +184,7 @@ def fingerprint():
 
 
 # -----------------------------
-# Optional: favicon to avoid log noise
+# Optional: favicon
 # -----------------------------
 @app.get("/favicon.ico")
 def favicon():
@@ -188,7 +193,6 @@ def favicon():
 
 # -----------------------------
 # Employee Clock Page
-# - passes all stores so employee UI can autocomplete Store Code
 # -----------------------------
 @app.get("/employee")
 def employee_page():
@@ -243,12 +247,17 @@ def api_clockin():
         clock_in=now_tz(),
         clock_in_lat=lat,
         clock_in_lng=lng,
+        closed_by_admin=False,
+        admin_closed_by=None,
+        admin_closed_at=None,
+        admin_close_reason=None,
     )
     db.session.add(s)
     db.session.commit()
 
     return jsonify({
         "ok": True,
+        "employee": emp.name,
         "message": f"Clock-in successful for {emp.name} at {store.name}.",
         "shift_id": s.id,
         "clock_in": fmt_dt(s.clock_in),
@@ -294,6 +303,7 @@ def api_clockout():
     hours = shift_hours(open_shift)
     return jsonify({
         "ok": True,
+        "employee": emp.name,
         "message": f"Clock-out successful for {emp.name}.",
         "shift_id": open_shift.id,
         "clock_out": fmt_dt(open_shift.clock_out),
@@ -455,6 +465,35 @@ def admin_close_shift():
     flash("Shift closed.", "success")
     return redirect(url_for("admin_shifts"))
 
+# --- NEW: Admin force close with reason (audit trail) ---
+@app.post("/admin/shifts/force_close")
+def admin_force_close_shift():
+    guard = admin_guard()
+    if guard: return guard
+
+    shift_id = request.form.get("shift_id")
+    reason = (request.form.get("reason") or "").strip()
+
+    s = Shift.query.get(shift_id)
+    if not s:
+        flash("Shift not found.", "danger")
+        return redirect(url_for("admin_shifts"))
+
+    if s.clock_out:
+        flash("Shift already closed.", "info")
+        return redirect(url_for("admin_shifts"))
+
+    s.clock_out = now_tz()
+    s.closed_by_admin = True
+    s.admin_closed_by = ADMIN_USERNAME
+    s.admin_closed_at = now_tz()
+    s.admin_close_reason = reason or None
+
+    db.session.commit()
+
+    flash("Shift force-closed (admin override).", "warning")
+    return redirect(url_for("admin_shifts"))
+
 @app.get("/admin/payroll")
 def admin_payroll():
     guard = admin_guard()
@@ -546,8 +585,7 @@ def admin_payroll():
 
 
 # -----------------------------
-# Index (UPDATED)
-# - Root URL now takes employees to the clock-in page
+# Index
 # -----------------------------
 @app.get("/")
 def index():
