@@ -1,5 +1,6 @@
 import os
 import math
+import logging
 from datetime import datetime, timedelta, time as dtime
 
 from flask import (
@@ -27,6 +28,9 @@ except Exception:
 # App + Config
 # -----------------------------
 app = Flask(__name__)
+
+# Basic INFO logging (Render captures these)
+logging.basicConfig(level=logging.INFO)
 
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev_secret_change_me")
 
@@ -181,6 +185,13 @@ def normalize_store_code(val: str) -> str:
     """
     return (val or "").strip().upper()
 
+def log_event(event: str, **fields):
+    """
+    Single-line structured logs for Render (distance-only; no GPS coordinates).
+    """
+    parts = [f"{k}={fields[k]}" for k in sorted(fields.keys())]
+    app.logger.info("%s %s", event, " ".join(parts))
+
 
 # -----------------------------
 # Fingerprint (DEBUG)
@@ -231,23 +242,47 @@ def api_clockin():
     # Case-insensitive store lookup (fixes lowercase vs uppercase mismatch)
     store = Store.query.filter(func.upper(Store.qr_token) == qr_token).first()
     if not store:
+        log_event("CLOCKIN_DENY_INVALID_STORE", employee_pin=pin, store_code=qr_token)
         return jsonify({"error": "Invalid store code."}), 404
 
     open_shift = Shift.query.filter_by(employee_id=emp.id, clock_out=None).order_by(Shift.clock_in.desc()).first()
     if open_shift:
+        log_event("CLOCKIN_DENY_ALREADY_CLOCKED_IN", employee_id=emp.id, open_shift_id=open_shift.id)
         return jsonify({"error": "You are already clocked in. Please clock out first."}), 409
 
     if lat is None or lng is None:
+        log_event("CLOCKIN_DENY_LOCATION_REQUIRED", employee_id=emp.id, store_id=store.id)
         return jsonify({"error": "Location required."}), 400
 
     try:
         lat = float(lat)
         lng = float(lng)
     except ValueError:
+        log_event("CLOCKIN_DENY_BAD_LATLNG", employee_id=emp.id, store_id=store.id)
         return jsonify({"error": "Invalid lat/lng."}), 400
 
     dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
+
+    # Distance-only server log (no lat/lng)
+    log_event(
+        "CLOCKIN_ATTEMPT",
+        employee_id=emp.id,
+        employee=emp.name,
+        store_id=store.id,
+        store=store.name,
+        store_code=store.qr_token,
+        dist_m=round(dist_m, 1),
+        radius_m=store.geofence_radius_m,
+    )
+
     if dist_m > store.geofence_radius_m:
+        log_event(
+            "CLOCKIN_DENY_OUTSIDE_RADIUS",
+            employee_id=emp.id,
+            store_id=store.id,
+            dist_m=round(dist_m, 1),
+            radius_m=store.geofence_radius_m,
+        )
         return jsonify({"error": "You are not at the store location."}), 403
 
     s = Shift(
@@ -263,6 +298,8 @@ def api_clockin():
     )
     db.session.add(s)
     db.session.commit()
+
+    log_event("CLOCKIN_OK", employee_id=emp.id, shift_id=s.id, store_id=store.id)
 
     return jsonify({
         "ok": True,
@@ -288,20 +325,44 @@ def api_clockout():
 
     open_shift = Shift.query.filter_by(employee_id=emp.id, clock_out=None).order_by(Shift.clock_in.desc()).first()
     if not open_shift:
+        log_event("CLOCKOUT_DENY_NO_OPEN_SHIFT", employee_id=emp.id)
         return jsonify({"error": "No open shift found. You must clock in first."}), 409
 
     if lat is None or lng is None:
+        log_event("CLOCKOUT_DENY_LOCATION_REQUIRED", employee_id=emp.id, shift_id=open_shift.id)
         return jsonify({"error": "Location required."}), 400
 
     try:
         lat = float(lat)
         lng = float(lng)
     except ValueError:
+        log_event("CLOCKOUT_DENY_BAD_LATLNG", employee_id=emp.id, shift_id=open_shift.id)
         return jsonify({"error": "Invalid lat/lng."}), 400
 
     store = Store.query.get(open_shift.store_id)
     dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
+
+    log_event(
+        "CLOCKOUT_ATTEMPT",
+        employee_id=emp.id,
+        employee=emp.name,
+        shift_id=open_shift.id,
+        store_id=store.id,
+        store=store.name,
+        store_code=store.qr_token,
+        dist_m=round(dist_m, 1),
+        radius_m=store.geofence_radius_m,
+    )
+
     if dist_m > store.geofence_radius_m:
+        log_event(
+            "CLOCKOUT_DENY_OUTSIDE_RADIUS",
+            employee_id=emp.id,
+            shift_id=open_shift.id,
+            store_id=store.id,
+            dist_m=round(dist_m, 1),
+            radius_m=store.geofence_radius_m,
+        )
         return jsonify({"error": "You are not at the store location."}), 403
 
     open_shift.clock_out = now_tz()
@@ -310,6 +371,9 @@ def api_clockout():
     db.session.commit()
 
     hours = shift_hours(open_shift)
+
+    log_event("CLOCKOUT_OK", employee_id=emp.id, shift_id=open_shift.id, hours=round(hours, 2))
+
     return jsonify({
         "ok": True,
         "employee": emp.name,
