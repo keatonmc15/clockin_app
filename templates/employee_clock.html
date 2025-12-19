@@ -52,14 +52,14 @@
           <div id="storeName" class="tiny muted mt-1"></div>
         </div>
 
-        <!-- Visible warning when clocked in -->
-        <div id="leaveWarning" class="alert alert-warning status-box mt-3 mb-0 tiny d-none" role="alert">
+        <!-- Banner shown only when clocked in -->
+        <div id="clockedInBanner" class="alert alert-warning status-box mt-3 mb-0 tiny d-none" role="alert">
           <strong>You are CLOCKED IN.</strong> Please clock out before leaving or closing this page.
         </div>
 
         <div class="d-grid gap-2 mt-3">
-          <button class="btn btn-dark big-btn" onclick="doClockIn()">Clock In</button>
-          <button class="btn btn-outline-dark big-btn" onclick="doClockOut()">Clock Out</button>
+          <button id="btnClockIn" class="btn btn-dark big-btn" onclick="doClockIn()">Clock In</button>
+          <button id="btnClockOut" class="btn btn-outline-dark big-btn" onclick="doClockOut()">Clock Out</button>
         </div>
 
         <div id="status" class="alert alert-light status-box mt-3 mb-0 tiny" role="alert">
@@ -77,7 +77,7 @@
 <script>
   const STORES = {{ stores|tojson }};
 
-  // Track whether this device is currently clocked in (for leave warning)
+  // Track whether this device is currently clocked in (for leave warning + button states)
   let IS_CLOCKED_IN = (localStorage.getItem("is_clocked_in") === "true");
 
   function setStatus(msg, kind="light") {
@@ -86,22 +86,31 @@
     el.textContent = msg;
   }
 
+  function updateButtonsAndBanner() {
+    const banner = document.getElementById("clockedInBanner");
+    const btnIn = document.getElementById("btnClockIn");
+    const btnOut = document.getElementById("btnClockOut");
+
+    if (IS_CLOCKED_IN) {
+      banner.classList.remove("d-none");
+      btnIn.disabled = true;
+      btnOut.disabled = false;
+    } else {
+      banner.classList.add("d-none");
+      btnIn.disabled = false;
+      btnOut.disabled = true;
+    }
+  }
+
   function setClockedIn(flag) {
     IS_CLOCKED_IN = !!flag;
     localStorage.setItem("is_clocked_in", IS_CLOCKED_IN ? "true" : "false");
-
-    const warn = document.getElementById("leaveWarning");
-    if (IS_CLOCKED_IN) {
-      warn.classList.remove("d-none");
-    } else {
-      warn.classList.add("d-none");
-    }
+    updateButtonsAndBanner();
   }
 
   // Warn user if they try to leave while clocked in
   window.addEventListener("beforeunload", (e) => {
     if (!IS_CLOCKED_IN) return;
-
     // Most browsers show a generic message (custom text is ignored)
     e.preventDefault();
     e.returnValue = "";
@@ -117,10 +126,10 @@
   window.addEventListener("load", () => {
     const saved = localStorage.getItem("last_store_code");
     if (saved) document.getElementById("store_code").value = saved;
-    updateStoreName();
 
-    // Restore clocked-in warning on page load if set
-    setClockedIn(IS_CLOCKED_IN);
+    updateStoreName();
+    updateButtonsAndBanner();
+
     if (IS_CLOCKED_IN) {
       setStatus("You appear to be CLOCKED IN on this device. Clock out before leaving this page.", "warning");
     }
@@ -144,16 +153,24 @@
   }
 
   async function doClockIn() {
+    if (IS_CLOCKED_IN) return; // safety
+
     const pin = (document.getElementById("pin").value || "").trim();
     const qr_token = (document.getElementById("store_code").value || "").trim();
 
     if (!pin) return setStatus("Enter your PIN.", "warning");
     if (!qr_token) return setStatus("Enter your Store Code.", "warning");
 
+    // Prevent double taps
+    document.getElementById("btnClockIn").disabled = true;
+
     setStatus("Getting location...");
     let loc;
     try { loc = await getLocation(); }
-    catch(e) { return setStatus("Location failed. Turn on location services and try again.", "danger"); }
+    catch(e) {
+      document.getElementById("btnClockIn").disabled = false;
+      return setStatus("Location failed. Turn on location services and try again.", "danger");
+    }
 
     setStatus("Clocking in...");
     const res = await fetch("/api/clockin", {
@@ -163,23 +180,34 @@
     });
 
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return setStatus(data.error || "Clock-in failed.", "danger");
+    if (!res.ok) {
+      document.getElementById("btnClockIn").disabled = false;
+      return setStatus(data.error || "Clock-in failed.", "danger");
+    }
 
     setStatus(data.message || "Clock-in successful.", "success");
     setClockedIn(true);
   }
 
   async function doClockOut() {
+    if (!IS_CLOCKED_IN) return; // safety
+
     const pin = (document.getElementById("pin").value || "").trim();
     const qr_token = (document.getElementById("store_code").value || "").trim();
 
     if (!pin) return setStatus("Enter your PIN.", "warning");
     if (!qr_token) return setStatus("Enter your Store Code.", "warning");
 
+    // Prevent double taps
+    document.getElementById("btnClockOut").disabled = true;
+
     setStatus("Getting location...");
     let loc;
     try { loc = await getLocation(); }
-    catch(e) { return setStatus("Location failed. Turn on location services and try again.", "danger"); }
+    catch(e) {
+      document.getElementById("btnClockOut").disabled = false;
+      return setStatus("Location failed. Turn on location services and try again.", "danger");
+    }
 
     setStatus("Clocking out...");
     const res = await fetch("/api/clockout", {
@@ -189,7 +217,10 @@
     });
 
     const data = await res.json().catch(() => ({}));
-    if (!res.ok) return setStatus(data.error || "Clock-out failed.", "danger");
+    if (!res.ok) {
+      document.getElementById("btnClockOut").disabled = false;
+      return setStatus(data.error || "Clock-out failed.", "danger");
+    }
 
     const hours = (data.hours !== undefined) ? ` Hours: ${data.hours}` : "";
     setStatus((data.message || "Clock-out successful.") + hours, "success");
