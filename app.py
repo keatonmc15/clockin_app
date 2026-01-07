@@ -122,6 +122,28 @@ class Shift(db.Model):
     store = db.relationship("Store", backref="shifts")
 
 
+# ✅ NEW: Location pings (15-min tracking)
+class LocationPing(db.Model):
+    __tablename__ = "location_pings"
+    id = db.Column(db.Integer, primary_key=True)
+
+    employee_id = db.Column(db.Integer, db.ForeignKey("employees.id"), nullable=False)
+    shift_id = db.Column(db.Integer, db.ForeignKey("shifts.id"), nullable=False)
+    store_id = db.Column(db.Integer, db.ForeignKey("stores.id"), nullable=False)
+
+    lat = db.Column(db.Float, nullable=False)
+    lng = db.Column(db.Float, nullable=False)
+
+    dist_m = db.Column(db.Float, nullable=False)
+    inside_radius = db.Column(db.Boolean, nullable=False, default=True)
+
+    created_at = db.Column(db.DateTime, default=lambda: now_tz(), nullable=False)
+
+    employee = db.relationship("Employee")
+    shift = db.relationship("Shift")
+    store = db.relationship("Store")
+
+
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -274,7 +296,7 @@ def api_clockin():
 
     if dist_m > store.geofence_radius_m:
         log_event(
-            "CLOCKIN_DENY_OUTSIDE_RADIUS",
+        "CLOCKIN_DENY_OUTSIDE_RADIUS",
             employee_id=emp.id,
             store_id=store.id,
             dist_m=round(dist_m, 1),
@@ -377,6 +399,69 @@ def api_clockout():
         "shift_id": open_shift.id,
         "clock_out": fmt_dt(open_shift.clock_out),
         "hours": round(hours, 2),
+    })
+
+
+# ✅ NEW: 15-minute location ping endpoint (called by employee_clock.html)
+@app.post("/api/ping")
+def api_ping():
+    data = request.get_json(force=True, silent=True) or {}
+
+    pin = (data.get("pin") or "").strip()
+    lat = data.get("lat")
+    lng = data.get("lng")
+
+    if not pin:
+        return jsonify({"error": "Missing PIN."}), 400
+
+    emp = Employee.query.filter_by(pin=pin).first()
+    if not emp or not emp.active:
+        return jsonify({"error": "Invalid or inactive employee."}), 403
+
+    open_shift = Shift.query.filter_by(employee_id=emp.id, clock_out=None).order_by(Shift.clock_in.desc()).first()
+    if not open_shift:
+        return jsonify({"error": "No open shift."}), 409
+
+    if lat is None or lng is None:
+        return jsonify({"error": "Location required."}), 400
+
+    try:
+        lat = float(lat)
+        lng = float(lng)
+    except ValueError:
+        return jsonify({"error": "Invalid lat/lng."}), 400
+
+    store = Store.query.get(open_shift.store_id)
+    dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
+    inside = dist_m <= store.geofence_radius_m
+
+    ping = LocationPing(
+        employee_id=emp.id,
+        shift_id=open_shift.id,
+        store_id=store.id,
+        lat=lat,
+        lng=lng,
+        dist_m=float(dist_m),
+        inside_radius=bool(inside),
+    )
+    db.session.add(ping)
+    db.session.commit()
+
+    log_event(
+        "PING_OK",
+        employee_id=emp.id,
+        shift_id=open_shift.id,
+        store_id=store.id,
+        dist_m=round(dist_m, 1),
+        inside=inside
+    )
+
+    return jsonify({
+        "ok": True,
+        "shift_id": open_shift.id,
+        "dist_m": round(dist_m, 1),
+        "inside_radius": inside,
+        "ping_at": fmt_dt(ping.created_at),
     })
 
 
