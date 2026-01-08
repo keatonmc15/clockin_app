@@ -69,7 +69,7 @@
           Ready.
         </div>
 
-        <!-- GPS DEBUG LINE (employee-friendly + helps you troubleshoot) -->
+        <!-- GPS DEBUG LINE -->
         <div class="mt-2 tiny muted">
           <div><span class="fw-semibold">GPS:</span> <span id="gpsPerm">—</span></div>
           <div>
@@ -95,8 +95,14 @@
   const LS_CLOCKED_NAME = "clocked_in_name";
   const LS_CLOCKED_SHIFT_ID = "clocked_in_shift_id";
   const LS_LAST_STORE = "last_store_code";
+  const LS_LAST_PIN = "last_pin"; // used for periodic pings
 
   let BUSY = false;
+
+  // ---- Ping config ----
+  const PING_EVERY_MS = 15 * 60 * 1000;   // 15 minutes
+  const PING_MAX_AGE_MS = 60 * 1000;      // allow cached GPS up to 1 minute for pings
+  let pingTimer = null;
 
   function isClockedIn() {
     return localStorage.getItem(LS_CLOCKED_IN) === "1";
@@ -106,6 +112,7 @@
     if (on) {
       localStorage.setItem(LS_CLOCKED_IN, "1");
       if (payload.name) localStorage.setItem(LS_CLOCKED_NAME, payload.name);
+;
       if (payload.shift_id !== undefined && payload.shift_id !== null) {
         localStorage.setItem(LS_CLOCKED_SHIFT_ID, String(payload.shift_id));
       }
@@ -151,7 +158,6 @@
       return;
     }
 
-    // Some browsers don’t support Permissions API reliably; handle gracefully.
     if (!("permissions" in navigator) || !navigator.permissions.query) {
       setGpsInfo({ permText: "Unknown" });
       return;
@@ -165,8 +171,6 @@
         "Needs approval";
 
       setGpsInfo({ permText: label });
-
-      // Update if user changes permission while page is open
       perm.onchange = () => refreshGpsPermission();
     } catch (e) {
       setGpsInfo({ permText: "Unknown" });
@@ -181,17 +185,18 @@
     });
   }
 
+  // ✅ Canonical store code = lowercase
   function normalizeStoreInput() {
     const el = document.getElementById("store_code");
     const raw = (el.value || "");
-    const norm = raw.trim().toUpperCase();
+    const norm = raw.trim().toLowerCase();
     if (el.value !== norm) el.value = norm;
     return norm;
   }
 
   function updateStoreName() {
     const code = normalizeStoreInput();
-    const match = STORES.find(s => String(s.code).toUpperCase() === code);
+    const match = STORES.find(s => String(s.code).toLowerCase() === code);
     document.getElementById("storeName").textContent = match ? `Selected: ${match.name}` : "";
   }
 
@@ -210,8 +215,11 @@
       btnIn.textContent = "Clock In";
       btnOut.textContent = "Clock Out";
     }
+
+    updateUI();
   }
 
+  // ✅ UPDATED: allow PIN typing while clocked in
   function updateUI() {
     const banner = document.getElementById("clockedBanner");
     const clockedNameEl = document.getElementById("clockedName");
@@ -232,19 +240,66 @@
       banner.classList.add("d-none");
     }
 
-    // Lock inputs when clocked in (and during busy)
-    pinInput.disabled = clocked || BUSY;
-    storeInput.disabled = clocked || BUSY;
+    // Inputs:
+    // - PIN stays usable so employee can type PIN to clock out
+    // - Store code stays locked while clocked in (prevents accidental store changes)
+    pinInput.disabled = BUSY;               // ✅ allow PIN entry while clocked in
+    storeInput.disabled = clocked || BUSY;  // ✅ lock store while clocked in
 
     // Buttons
     btnIn.disabled = BUSY || clocked;
     btnOut.disabled = BUSY || !clocked;
 
-    // Warn when leaving while clocked in
+    // Nice UX: focus PIN when clocked in
+    if (clocked && !BUSY) {
+      pinInput.focus();
+    }
+
     window.__shouldWarnOnLeave = clocked;
   }
 
-  // Remember last store code on this device + init UI
+  // ---- Ping helpers ----
+  function stopPingLoop() {
+    if (pingTimer) {
+      clearInterval(pingTimer);
+      pingTimer = null;
+    }
+  }
+
+  async function sendPing(pin) {
+    if (!pin) return;
+
+    let loc;
+    try {
+      loc = await getLocation({ timeoutMs: 15000, maximumAgeMs: PING_MAX_AGE_MS });
+    } catch (e) {
+      return;
+    }
+
+    try {
+      await fetch("/api/ping", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pin, lat: loc.lat, lng: loc.lng })
+      });
+    } catch (e) {}
+  }
+
+  function startPingLoop(pin) {
+    stopPingLoop();
+    if (!pin) return;
+
+    localStorage.setItem(LS_LAST_PIN, pin);
+
+    sendPing(pin).catch(() => {});
+
+    pingTimer = setInterval(() => {
+      if (!isClockedIn()) return stopPingLoop();
+      const p = (localStorage.getItem(LS_LAST_PIN) || "").trim();
+      if (p) sendPing(p).catch(() => {});
+    }, PING_EVERY_MS);
+  }
+
   window.addEventListener("load", () => {
     const saved = localStorage.getItem(LS_LAST_STORE);
     if (saved) document.getElementById("store_code").value = saved;
@@ -252,12 +307,13 @@
     updateStoreName();
     updateUI();
 
-    // GPS permission line
     refreshGpsPermission();
-
-    // Optional: warm up a GPS fix so accuracy shows even before punching
-    // (If permission is denied or prompt, it will just fail silently)
     getLocation().catch(() => {});
+
+    if (isClockedIn()) {
+      const p = (localStorage.getItem(LS_LAST_PIN) || "").trim();
+      if (p) startPingLoop(p);
+    }
   });
 
   document.getElementById("store_code").addEventListener("input", () => {
@@ -266,14 +322,20 @@
     if (code) localStorage.setItem(LS_LAST_STORE, code);
   });
 
-  // Browser "Are you sure you want to leave?" popup while clocked in
   window.addEventListener("beforeunload", (e) => {
     if (!window.__shouldWarnOnLeave) return;
     e.preventDefault();
     e.returnValue = "";
   });
 
-  function getLocation() {
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && isClockedIn()) {
+      const p = (localStorage.getItem(LS_LAST_PIN) || "").trim();
+      if (p) sendPing(p).catch(() => {});
+    }
+  });
+
+  function getLocation({ timeoutMs=10000, maximumAgeMs=0 } = {}) {
     return new Promise((resolve, reject) => {
       if (!navigator.geolocation) {
         setGpsInfo({ permText: "Not supported" });
@@ -286,15 +348,14 @@
           resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
         },
         err => {
-          // Map common errors to the GPS line
-          if (err && err.code === 1) setGpsInfo({ permText: "Denied" });           // PERMISSION_DENIED
-          else if (err && err.code === 2) setGpsInfo({ permText: "Unavailable" }); // POSITION_UNAVAILABLE
-          else if (err && err.code === 3) setGpsInfo({ permText: "Timeout" });     // TIMEOUT
+          if (err && err.code === 1) setGpsInfo({ permText: "Denied" });
+          else if (err && err.code === 2) setGpsInfo({ permText: "Unavailable" });
+          else if (err && err.code === 3) setGpsInfo({ permText: "Timeout" });
           else setGpsInfo({ permText: "Error" });
 
           reject(err);
         },
-        { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+        { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: maximumAgeMs }
       );
     });
   }
@@ -313,7 +374,7 @@
     setStatus("Getting location...");
 
     let loc;
-    try { loc = await getLocation(); }
+    try { loc = await getLocation({ timeoutMs: 10000, maximumAgeMs: 0 }); }
     catch(e) {
       setBusy(false);
       return setStatus("Location failed. Turn on location services and try again.", "danger");
@@ -335,22 +396,22 @@
     setClockedIn(true, { name: data.employee || "", shift_id: data.shift_id });
     setStatus(data.message || "Clock-in successful.", "success");
     setBusy(false);
+
+    startPingLoop(pin);
   }
 
+  // ✅ UPDATED: clock out no longer requires store code
   async function doClockOut() {
     if (BUSY) return;
 
     const pin = (document.getElementById("pin").value || "").trim();
-    const qr_token = normalizeStoreInput();
-
     if (!pin) return setStatus("Enter your PIN.", "warning");
-    if (!qr_token) return setStatus("Enter your Store Code.", "warning");
 
     setBusy(true, "out");
     setStatus("Getting location...");
 
     let loc;
-    try { loc = await getLocation(); }
+    try { loc = await getLocation({ timeoutMs: 10000, maximumAgeMs: 0 }); }
     catch(e) {
       setBusy(false);
       return setStatus("Location failed. Turn on location services and try again.", "danger");
@@ -360,7 +421,7 @@
     const res = await fetch("/api/clockout", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin, qr_token, lat: loc.lat, lng: loc.lng })
+      body: JSON.stringify({ pin, lat: loc.lat, lng: loc.lng })
     });
 
     const data = await res.json().catch(() => ({}));
@@ -369,6 +430,8 @@
       const msg = (data.error || "Clock-out failed.").toLowerCase();
       if (msg.includes("no open shift")) {
         setClockedIn(false);
+        stopPingLoop();
+        localStorage.removeItem(LS_LAST_PIN);
         setStatus("No open shift found. It may have been closed by an admin.", "warning");
         setBusy(false);
         return;
@@ -378,9 +441,11 @@
     }
 
     setClockedIn(false);
+    stopPingLoop();
+    localStorage.removeItem(LS_LAST_PIN);
 
-    const hours = (data.hours !== undefined) ? ` Hours: ${data.hours}` : "";
-    setStatus((data.message || "Clock-out successful.") + hours, "success");
+    const worked = data.human ? ` Worked: ${data.human}` : "";
+    setStatus((data.message || "Clock-out successful.") + worked, "success");
     setBusy(false);
   }
 </script>

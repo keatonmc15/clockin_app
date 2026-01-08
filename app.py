@@ -18,14 +18,20 @@ from sqlalchemy import func
 # Timezone (Windows-safe)
 # -----------------------------
 APP_TZ = None
+UTC_TZ = None
 try:
     from zoneinfo import ZoneInfo
     try:
         APP_TZ = ZoneInfo("America/Chicago")
     except Exception:
         APP_TZ = None
+    try:
+        UTC_TZ = ZoneInfo("UTC")
+    except Exception:
+        UTC_TZ = None
 except Exception:
     APP_TZ = None
+    UTC_TZ = None
 
 # -----------------------------
 # App + Config
@@ -69,6 +75,34 @@ ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Ccss1234")
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH") or generate_password_hash(ADMIN_PASSWORD)
 
 # -----------------------------
+# Helpers (time)
+# -----------------------------
+def now_utc() -> datetime:
+    # store naive UTC (works reliably with db.DateTime columns)
+    return datetime.utcnow()
+
+def now_local() -> datetime:
+    if APP_TZ:
+        return datetime.now(APP_TZ)
+    return datetime.now()
+
+def utc_naive_to_local(dt: datetime) -> datetime:
+    """
+    Treat incoming dt as UTC if naive; convert to APP_TZ for display.
+    """
+    if not dt:
+        return dt
+    try:
+        if getattr(dt, "tzinfo", None) is None:
+            if UTC_TZ:
+                dt = dt.replace(tzinfo=UTC_TZ)
+        if APP_TZ and getattr(dt, "tzinfo", None):
+            dt = dt.astimezone(APP_TZ)
+    except Exception:
+        pass
+    return dt
+
+# -----------------------------
 # Models
 # -----------------------------
 class Store(db.Model):
@@ -82,7 +116,7 @@ class Store(db.Model):
     longitude = db.Column(db.Float, nullable=False)
     geofence_radius_m = db.Column(db.Integer, nullable=False, default=150)
 
-    created_at = db.Column(db.DateTime, default=lambda: now_tz())
+    created_at = db.Column(db.DateTime, default=lambda: now_utc())
 
 
 class Employee(db.Model):
@@ -93,7 +127,7 @@ class Employee(db.Model):
     pin = db.Column(db.String(20), nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
 
-    created_at = db.Column(db.DateTime, default=lambda: now_tz())
+    created_at = db.Column(db.DateTime, default=lambda: now_utc())
 
 
 class Shift(db.Model):
@@ -117,7 +151,7 @@ class Shift(db.Model):
     admin_closed_at = db.Column(db.DateTime, nullable=True)
     admin_close_reason = db.Column(db.Text, nullable=True)
 
-    created_at = db.Column(db.DateTime, default=lambda: now_tz())
+    created_at = db.Column(db.DateTime, default=lambda: now_utc())
 
     employee = db.relationship("Employee", backref="shifts")
     store = db.relationship("Store", backref="shifts")
@@ -138,7 +172,7 @@ class LocationPing(db.Model):
     dist_m = db.Column(db.Float, nullable=False)
     inside_radius = db.Column(db.Boolean, nullable=False, default=True)
 
-    created_at = db.Column(db.DateTime, default=lambda: now_tz(), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
 
     employee = db.relationship("Employee")
     shift = db.relationship("Shift")
@@ -160,46 +194,50 @@ class ShiftEditAudit(db.Model):
     new_clock_in = db.Column(db.DateTime, nullable=True)
     new_clock_out = db.Column(db.DateTime, nullable=True)
 
-    created_at = db.Column(db.DateTime, default=lambda: now_tz(), nullable=False)
+    created_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
 
     shift = db.relationship("Shift")
 
 
 # -----------------------------
-# Helpers
+# Helpers (general)
 # -----------------------------
-def now_tz() -> datetime:
-    if APP_TZ:
-        return datetime.now(APP_TZ)
-    return datetime.now()
-
 def fmt_dt(dt: datetime | None) -> str:
     if not dt:
         return ""
-    try:
-        if APP_TZ and getattr(dt, "tzinfo", None):
-            dt = dt.astimezone(APP_TZ)
-    except Exception:
-        pass
-    return dt.strftime("%Y-%m-%d %I:%M %p")
+    dt_local = utc_naive_to_local(dt)
+    return dt_local.strftime("%Y-%m-%d %I:%M %p")
 
 def parse_local_datetime(val: str) -> datetime | None:
     """
     Accepts 'YYYY-MM-DDTHH:MM' (HTML datetime-local) OR 'YYYY-MM-DD HH:MM'
-    Returns tz-aware (APP_TZ) if possible, else naive.
+    Input is interpreted as America/Chicago (APP_TZ) and converted to UTC-naive for storage.
     """
     if not val:
         return None
     s = val.strip()
     for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"):
         try:
-            dt = datetime.strptime(s, fmt)
-            if APP_TZ:
-                return dt.replace(tzinfo=APP_TZ)
-            return dt
+            naive = datetime.strptime(s, fmt)  # naive local wall time
+            if APP_TZ and UTC_TZ:
+                local_dt = naive.replace(tzinfo=APP_TZ)
+                utc_dt = local_dt.astimezone(UTC_TZ)
+                return utc_dt.replace(tzinfo=None)  # store naive UTC
+            # fallback: store naive as-is
+            return naive
         except ValueError:
             continue
     return None
+
+def local_range_to_utc_naive(start_local: datetime, end_local: datetime) -> tuple[datetime, datetime]:
+    """
+    Converts tz-aware local week bounds (America/Chicago) to UTC-naive for DB filtering.
+    """
+    if APP_TZ and UTC_TZ and getattr(start_local, "tzinfo", None) and getattr(end_local, "tzinfo", None):
+        s_utc = start_local.astimezone(UTC_TZ).replace(tzinfo=None)
+        e_utc = end_local.astimezone(UTC_TZ).replace(tzinfo=None)
+        return s_utc, e_utc
+    return start_local.replace(tzinfo=None), end_local.replace(tzinfo=None)
 
 def haversine_m(lat1, lon1, lat2, lon2) -> float:
     R = 6371000.0
@@ -236,12 +274,10 @@ def minutes_to_human(minutes: int) -> str:
 def minutes_to_decimal_hours(minutes: int, places: int = 4) -> str:
     if minutes <= 0:
         return "0"
-    # Decimal for stable payroll export
     val = (Decimal(minutes) / Decimal(60)).quantize(
         Decimal("1." + "0" * places),
         rounding=ROUND_HALF_UP
     )
-    # strip trailing zeros a bit nicely, but keep at least 2 decimals? (we'll keep as string)
     return format(val, "f")
 
 # (kept for compatibility where used)
@@ -250,9 +286,10 @@ def shift_hours(shift: "Shift") -> float:
     return float(Decimal(mins) / Decimal(60)) if mins else 0.0
 
 def last_completed_payroll_week(reference: datetime | None = None):
-    ref = reference or now_tz()
-    weekday = ref.weekday()  # Monday=0
-    this_monday = ref.date() - timedelta(days=weekday)
+    # Payroll week definition should be based on LOCAL time (America/Chicago)
+    ref_local = reference or now_local()
+    weekday = ref_local.weekday()  # Monday=0
+    this_monday = ref_local.date() - timedelta(days=weekday)
     last_monday = this_monday - timedelta(days=7)
     last_sunday = last_monday + timedelta(days=6)
 
@@ -309,7 +346,7 @@ with app.app_context():
 # -----------------------------
 @app.get("/__fingerprint__")
 def fingerprint():
-    return "clockin_app LIVE fingerprint 2026-01-07"
+    return "clockin_app LIVE fingerprint 2026-01-08"
 
 # -----------------------------
 # Optional: favicon
@@ -394,7 +431,7 @@ def api_clockin():
     s = Shift(
         employee_id=emp.id,
         store_id=store.id,
-        clock_in=now_tz(),
+        clock_in=now_utc(),  # ✅ store UTC
         clock_in_lat=lat,
         clock_in_lng=lng,
         closed_by_admin=False,
@@ -471,7 +508,7 @@ def api_clockout():
         )
         return jsonify({"error": "You are not at the store location."}), 403
 
-    open_shift.clock_out = now_tz()
+    open_shift.clock_out = now_utc()  # ✅ store UTC
     open_shift.clock_out_lat = lat
     open_shift.clock_out_lng = lng
     db.session.commit()
@@ -530,6 +567,7 @@ def api_ping():
         lng=lng,
         dist_m=float(dist_m),
         inside_radius=bool(inside),
+        created_at=now_utc()
     )
     db.session.add(ping)
     db.session.commit()
@@ -587,7 +625,7 @@ def admin_dashboard():
     open_shifts = Shift.query.filter_by(clock_out=None).count()
     employees = Employee.query.count()
     stores = Store.query.count()
-    last7 = now_tz() - timedelta(days=7)
+    last7 = now_utc() - timedelta(days=7)
     shifts_7d = Shift.query.filter(Shift.clock_in >= last7).count()
 
     return render_template(
@@ -940,7 +978,6 @@ def admin_shifts():
         Shift.clock_in.desc()
     ).limit(300).all()
 
-    # templates can call shift_minutes / minutes_to_human via context_processor
     return render_template("shifts.html", shifts=shifts)
 
 @app.post("/admin/shifts/close")
@@ -958,7 +995,7 @@ def admin_close_shift():
         flash("Shift already closed.", "info")
         return redirect(url_for("admin_shifts"))
 
-    s.clock_out = now_tz()
+    s.clock_out = now_utc()
     db.session.commit()
     flash("Shift closed.", "success")
     return redirect(url_for("admin_shifts"))
@@ -983,13 +1020,12 @@ def admin_force_close_shift():
     old_in = s.clock_in
     old_out = s.clock_out
 
-    s.clock_out = now_tz()
+    s.clock_out = now_utc()
     s.closed_by_admin = True
     s.admin_closed_by = admin_username()
-    s.admin_closed_at = now_tz()
+    s.admin_closed_at = now_utc()
     s.admin_close_reason = reason or None
 
-    # ✅ Step 2: audit entry
     audit = ShiftEditAudit(
         shift_id=s.id,
         action="force_close",
@@ -1001,13 +1037,11 @@ def admin_force_close_shift():
         new_clock_out=s.clock_out
     )
     db.session.add(audit)
-
     db.session.commit()
 
     flash("Shift force-closed (admin override).", "warning")
     return redirect(url_for("admin_shifts"))
 
-# ✅ Step 2: Add shift (manual)
 @app.route("/admin/shifts/new", methods=["GET", "POST"])
 def admin_shift_new():
     guard = admin_guard()
@@ -1049,7 +1083,7 @@ def admin_shift_new():
             clock_out=cout,
             closed_by_admin=True,
             admin_closed_by=admin_username(),
-            admin_closed_at=now_tz(),
+            admin_closed_at=now_utc(),
             admin_close_reason=reason
         )
         db.session.add(s)
@@ -1073,7 +1107,6 @@ def admin_shift_new():
 
     return render_template("admin_shift_new.html", employees=employees, stores=stores)
 
-# ✅ Step 2: Edit shift (manual correction)
 @app.route("/admin/shifts/<int:shift_id>/edit", methods=["GET", "POST"])
 def admin_shift_edit(shift_id: int):
     guard = admin_guard()
@@ -1117,10 +1150,9 @@ def admin_shift_edit(shift_id: int):
         s.clock_in = cin
         s.clock_out = cout
 
-        # mark as admin-touched
         s.closed_by_admin = True
         s.admin_closed_by = admin_username()
-        s.admin_closed_at = now_tz()
+        s.admin_closed_at = now_utc()
         s.admin_close_reason = reason
 
         audit = ShiftEditAudit(
@@ -1141,7 +1173,6 @@ def admin_shift_edit(shift_id: int):
 
     return render_template("admin_shift_edit.html", s=s, employees=employees, stores=stores)
 
-# ✅ Step 2: Audit log view
 @app.get("/admin/audit")
 def admin_audit():
     guard = admin_guard()
@@ -1175,10 +1206,13 @@ def admin_payroll():
     else:
         start_dt, end_dt = last_completed_payroll_week()
 
+    # ✅ Convert local payroll window to UTC-naive for DB filter
+    q_start, q_end = local_range_to_utc_naive(start_dt, end_dt)
+
     shifts = Shift.query.filter(
         Shift.clock_out.isnot(None),
-        Shift.clock_out >= start_dt,
-        Shift.clock_out <= end_dt
+        Shift.clock_out >= q_start,
+        Shift.clock_out <= q_end
     ).order_by(Shift.clock_out.asc()).all()
 
     rows = []
