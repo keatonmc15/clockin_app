@@ -1,0 +1,57 @@
+{% extends "base_admin.html" %}
+{% set title = "Audit Log" %}
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h2 class="m-0">Audit Log</h2>
+  <a class="btn btn-outline-secondary" href="{{ url_for('admin_dashboard') }}">Back</a>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <div class="table-responsive">
+      <table class="table table-sm align-middle">
+        <thead>
+          <tr>
+            <th>When</th>
+            <th>Action</th>
+            <th>Shift</th>
+            <th>Editor</th>
+            <th>Reason</th>
+            <th>Old</th>
+            <th>New</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for a in audits %}
+          <tr>
+            <td>{{ fmt_dt(a.created_at) }}</td>
+            <td><span class="badge bg-secondary">{{ a.action }}</span></td>
+            <td>
+              {% if a.shift_id %}
+                #{{ a.shift_id }}
+                <a class="ms-2" href="{{ url_for('admin_shift_edit', shift_id=a.shift_id) }}">edit</a>
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td>{{ a.editor }}</td>
+            <td style="max-width: 320px;">{{ a.reason }}</td>
+            <td style="white-space: nowrap;">
+              {{ fmt_dt(a.old_clock_in) }}<br>
+              {{ fmt_dt(a.old_clock_out) }}
+            </td>
+            <td style="white-space: nowrap;">
+              {{ fmt_dt(a.new_clock_in) }}<br>
+              {{ fmt_dt(a.new_clock_out) }}
+            </td>
+          </tr>
+          {% endfor %}
+          {% if audits|length == 0 %}
+          <tr><td colspan="7" class="text-muted">No audit entries yet.</td></tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+{% endblock %}

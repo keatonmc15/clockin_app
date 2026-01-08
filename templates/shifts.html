@@ -6,6 +6,11 @@
 
 <div class="card shadow-sm">
   <div class="card-body">
+    <div class="d-flex gap-2 mb-3">
+      <a class="btn btn-sm btn-dark" href="{{ url_for('admin_shift_new') }}">Add Shift</a>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_audit') }}">Audit Log</a>
+    </div>
+
     <div class="table-responsive">
       <table class="table table-sm align-middle">
         <thead>
@@ -15,8 +20,8 @@
             <th>Store</th>
             <th>Clock In</th>
             <th>Clock Out</th>
-            <th>Hours</th>
-            <th style="width: 150px;"></th>
+            <th>Worked</th>
+            <th style="width: 240px;"></th>
           </tr>
         </thead>
         <tbody>
@@ -33,10 +38,21 @@
             <td>{{ s.store.name }}</td>
             <td>{{ fmt_dt(s.clock_in) }}</td>
             <td>{{ fmt_dt(s.clock_out) }}</td>
-            <td>{{ "%.2f"|format(shift_hours(s)) }}</td>
             <td>
+              {% if s.clock_out %}
+                {{ minutes_to_human(shift_minutes(s)) }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td class="text-nowrap">
+              <a class="btn btn-sm btn-outline-primary me-1"
+                 href="{{ url_for('admin_shift_edit', shift_id=s.id) }}">
+                Edit
+              </a>
+
               {% if not s.clock_out %}
-              <form method="post" action="{{ url_for('admin_close_shift') }}" class="m-0">
+              <form method="post" action="{{ url_for('admin_close_shift') }}" class="d-inline m-0">
                 <input type="hidden" name="shift_id" value="{{ s.id }}"/>
                 <button class="btn btn-sm btn-outline-dark" type="submit">Close Shift</button>
               </form>

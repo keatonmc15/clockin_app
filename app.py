@@ -3,6 +3,7 @@ import math
 import logging
 import csv
 from io import TextIOWrapper
+from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, time as dtime
 
 from flask import (
@@ -122,7 +123,7 @@ class Shift(db.Model):
     store = db.relationship("Store", backref="shifts")
 
 
-# ✅ NEW: Location pings (15-min tracking)
+# ✅ Location pings (15-min tracking)
 class LocationPing(db.Model):
     __tablename__ = "location_pings"
     id = db.Column(db.Integer, primary_key=True)
@@ -144,6 +145,26 @@ class LocationPing(db.Model):
     store = db.relationship("Store")
 
 
+# ✅ NEW (Step 2): Shift edit audit trail (Option B-safe: new table)
+class ShiftEditAudit(db.Model):
+    __tablename__ = "shift_edit_audit"
+    id = db.Column(db.Integer, primary_key=True)
+
+    shift_id = db.Column(db.Integer, db.ForeignKey("shifts.id"), nullable=True)
+    action = db.Column(db.String(40), nullable=False)  # create/edit/force_close
+    editor = db.Column(db.String(120), nullable=False)  # admin username
+    reason = db.Column(db.Text, nullable=False)
+
+    old_clock_in = db.Column(db.DateTime, nullable=True)
+    old_clock_out = db.Column(db.DateTime, nullable=True)
+    new_clock_in = db.Column(db.DateTime, nullable=True)
+    new_clock_out = db.Column(db.DateTime, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=lambda: now_tz(), nullable=False)
+
+    shift = db.relationship("Shift")
+
+
 # -----------------------------
 # Helpers
 # -----------------------------
@@ -162,6 +183,24 @@ def fmt_dt(dt: datetime | None) -> str:
         pass
     return dt.strftime("%Y-%m-%d %I:%M %p")
 
+def parse_local_datetime(val: str) -> datetime | None:
+    """
+    Accepts 'YYYY-MM-DDTHH:MM' (HTML datetime-local) OR 'YYYY-MM-DD HH:MM'
+    Returns tz-aware (APP_TZ) if possible, else naive.
+    """
+    if not val:
+        return None
+    s = val.strip()
+    for fmt in ("%Y-%m-%dT%H:%M", "%Y-%m-%d %H:%M"):
+        try:
+            dt = datetime.strptime(s, fmt)
+            if APP_TZ:
+                return dt.replace(tzinfo=APP_TZ)
+            return dt
+        except ValueError:
+            continue
+    return None
+
 def haversine_m(lat1, lon1, lat2, lon2) -> float:
     R = 6371000.0
     phi1 = math.radians(lat1)
@@ -173,11 +212,42 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-def shift_hours(shift: "Shift") -> float:
+# ✅ Step 1: minute-accurate shift minutes (NO quarter-hour rounding)
+def shift_minutes(shift: "Shift") -> int:
     if not shift.clock_in or not shift.clock_out:
-        return 0.0
+        return 0
     seconds = (shift.clock_out - shift.clock_in).total_seconds()
-    return max(0.0, seconds / 3600.0)
+    if seconds <= 0:
+        return 0
+    return int(seconds // 60)  # whole minutes
+
+def minutes_to_human(minutes: int) -> str:
+    if minutes <= 0:
+        return "0 min"
+    hours = minutes // 60
+    mins = minutes % 60
+    if hours > 0 and mins > 0:
+        return f"{hours} hr {mins} min"
+    elif hours > 0:
+        return f"{hours} hr"
+    else:
+        return f"{mins} min"
+
+def minutes_to_decimal_hours(minutes: int, places: int = 4) -> str:
+    if minutes <= 0:
+        return "0"
+    # Decimal for stable payroll export
+    val = (Decimal(minutes) / Decimal(60)).quantize(
+        Decimal("1." + "0" * places),
+        rounding=ROUND_HALF_UP
+    )
+    # strip trailing zeros a bit nicely, but keep at least 2 decimals? (we'll keep as string)
+    return format(val, "f")
+
+# (kept for compatibility where used)
+def shift_hours(shift: "Shift") -> float:
+    mins = shift_minutes(shift)
+    return float(Decimal(mins) / Decimal(60)) if mins else 0.0
 
 def last_completed_payroll_week(reference: datetime | None = None):
     ref = reference or now_tz()
@@ -203,6 +273,9 @@ def admin_guard():
         return redirect(url_for("admin_login"))
     return None
 
+def admin_username() -> str:
+    return (session.get("admin_username") or ADMIN_USERNAME or "admin")
+
 # ✅ Canonical store codes = lowercase
 def normalize_store_code(val: str) -> str:
     return (val or "").strip().lower()
@@ -211,14 +284,32 @@ def log_event(event: str, **fields):
     parts = [f"{k}={fields[k]}" for k in sorted(fields.keys())]
     app.logger.info("%s %s", event, " ".join(parts))
 
+# Make helpers available in templates
+@app.context_processor
+def inject_helpers():
+    return dict(
+        fmt_dt=fmt_dt,
+        shift_minutes=shift_minutes,
+        minutes_to_human=minutes_to_human,
+        minutes_to_decimal_hours=minutes_to_decimal_hours
+    )
+
+# -----------------------------
+# Create tables on startup (Option B)
+# -----------------------------
+with app.app_context():
+    try:
+        db.create_all()
+        app.logger.info("DB create_all OK")
+    except Exception as e:
+        app.logger.exception("DB create_all failed: %s", e)
 
 # -----------------------------
 # Fingerprint (DEBUG)
 # -----------------------------
 @app.get("/__fingerprint__")
 def fingerprint():
-    return "clockin_app LIVE fingerprint 2025-12-18"
-
+    return "clockin_app LIVE fingerprint 2026-01-07"
 
 # -----------------------------
 # Optional: favicon
@@ -227,17 +318,14 @@ def fingerprint():
 def favicon():
     return ("", 204)
 
-
 # -----------------------------
 # Employee Clock Page
 # -----------------------------
 @app.get("/employee")
 def employee_page():
     stores = Store.query.order_by(Store.name.asc()).all()
-    # send codes as stored (now canonical lowercase)
     stores_min = [{"name": s.name, "code": s.qr_token} for s in stores]
     return render_template("employee_clock.html", stores=stores_min)
-
 
 # -----------------------------
 # Employee API (Clock In/Out)
@@ -259,7 +347,6 @@ def api_clockin():
     if not emp or not emp.active:
         return jsonify({"error": "Invalid or inactive employee."}), 403
 
-    # ✅ case-insensitive match using lower()
     store = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
     if not store:
         log_event("CLOCKIN_DENY_INVALID_STORE", employee_pin=pin, store_code=qr_token)
@@ -296,7 +383,7 @@ def api_clockin():
 
     if dist_m > store.geofence_radius_m:
         log_event(
-        "CLOCKIN_DENY_OUTSIDE_RADIUS",
+            "CLOCKIN_DENY_OUTSIDE_RADIUS",
             employee_id=emp.id,
             store_id=store.id,
             dist_m=round(dist_m, 1),
@@ -389,8 +476,8 @@ def api_clockout():
     open_shift.clock_out_lng = lng
     db.session.commit()
 
-    hours = shift_hours(open_shift)
-    log_event("CLOCKOUT_OK", employee_id=emp.id, shift_id=open_shift.id, hours=round(hours, 2))
+    mins = shift_minutes(open_shift)
+    log_event("CLOCKOUT_OK", employee_id=emp.id, shift_id=open_shift.id, minutes=mins)
 
     return jsonify({
         "ok": True,
@@ -398,11 +485,11 @@ def api_clockout():
         "message": f"Clock-out successful for {emp.name}.",
         "shift_id": open_shift.id,
         "clock_out": fmt_dt(open_shift.clock_out),
-        "hours": round(hours, 2),
+        "minutes": mins,
+        "human": minutes_to_human(mins),
     })
 
-
-# ✅ NEW: 15-minute location ping endpoint (called by employee_clock.html)
+# 15-minute location ping endpoint
 @app.post("/api/ping")
 def api_ping():
     data = request.get_json(force=True, silent=True) or {}
@@ -464,7 +551,6 @@ def api_ping():
         "ping_at": fmt_dt(ping.created_at),
     })
 
-
 # -----------------------------
 # Admin Auth
 # -----------------------------
@@ -476,6 +562,7 @@ def admin_login():
 
         if username == ADMIN_USERNAME and check_password_hash(ADMIN_PASSWORD_HASH, password):
             session["admin_logged_in"] = True
+            session["admin_username"] = username  # ✅ store for audit trail
             return redirect(url_for("admin_dashboard"))
 
         flash("Invalid username or password.", "danger")
@@ -485,9 +572,9 @@ def admin_login():
 @app.get("/admin/logout")
 def admin_logout():
     session.pop("admin_logged_in", None)
+    session.pop("admin_username", None)
     flash("Logged out.", "info")
     return redirect(url_for("admin_login"))
-
 
 # -----------------------------
 # Admin Pages
@@ -558,7 +645,6 @@ def admin_import():
                             lng = float(lng)
                             radius = int(float(radius))
 
-                            # ✅ case-insensitive duplicate check
                             existing = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
                             if existing:
                                 skipped_stores += 1
@@ -648,7 +734,6 @@ def admin_import():
 
     return render_template("import.html", results=results)
 
-
 @app.route("/admin/employees", methods=["GET", "POST"])
 def admin_employees():
     guard = admin_guard()
@@ -683,7 +768,6 @@ def admin_employees():
     employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
     return render_template("employees.html", employees=employees)
 
-# ---- NEW: Employee update/delete ----
 @app.post("/admin/employees/update")
 def admin_employees_update():
     guard = admin_guard()
@@ -737,7 +821,6 @@ def admin_employees_delete():
     flash("Employee deleted.", "success")
     return redirect(url_for("admin_employees"))
 
-
 @app.route("/admin/stores", methods=["GET", "POST"])
 def admin_stores():
     guard = admin_guard()
@@ -782,7 +865,6 @@ def admin_stores():
     stores = Store.query.order_by(Store.name.asc()).all()
     return render_template("stores.html", stores=stores)
 
-# ---- NEW: Store update/delete ----
 @app.post("/admin/stores/update")
 def admin_stores_update():
     guard = admin_guard()
@@ -848,7 +930,6 @@ def admin_stores_delete():
     flash("Store deleted.", "success")
     return redirect(url_for("admin_stores"))
 
-
 @app.get("/admin/shifts")
 def admin_shifts():
     guard = admin_guard()
@@ -859,7 +940,8 @@ def admin_shifts():
         Shift.clock_in.desc()
     ).limit(300).all()
 
-    return render_template("shifts.html", shifts=shifts, fmt_dt=fmt_dt, shift_hours=shift_hours)
+    # templates can call shift_minutes / minutes_to_human via context_processor
+    return render_template("shifts.html", shifts=shifts)
 
 @app.post("/admin/shifts/close")
 def admin_close_shift():
@@ -898,16 +980,175 @@ def admin_force_close_shift():
         flash("Shift already closed.", "info")
         return redirect(url_for("admin_shifts"))
 
+    old_in = s.clock_in
+    old_out = s.clock_out
+
     s.clock_out = now_tz()
     s.closed_by_admin = True
-    s.admin_closed_by = ADMIN_USERNAME
+    s.admin_closed_by = admin_username()
     s.admin_closed_at = now_tz()
     s.admin_close_reason = reason or None
+
+    # ✅ Step 2: audit entry
+    audit = ShiftEditAudit(
+        shift_id=s.id,
+        action="force_close",
+        editor=admin_username(),
+        reason=reason or "Force close (no reason provided)",
+        old_clock_in=old_in,
+        old_clock_out=old_out,
+        new_clock_in=s.clock_in,
+        new_clock_out=s.clock_out
+    )
+    db.session.add(audit)
 
     db.session.commit()
 
     flash("Shift force-closed (admin override).", "warning")
     return redirect(url_for("admin_shifts"))
+
+# ✅ Step 2: Add shift (manual)
+@app.route("/admin/shifts/new", methods=["GET", "POST"])
+def admin_shift_new():
+    guard = admin_guard()
+    if guard: return guard
+
+    employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
+    stores = Store.query.order_by(Store.name.asc()).all()
+
+    if request.method == "POST":
+        employee_id = request.form.get("employee_id")
+        store_id = request.form.get("store_id")
+        clock_in_raw = request.form.get("clock_in")
+        clock_out_raw = request.form.get("clock_out")
+        reason = (request.form.get("reason") or "").strip()
+
+        if not employee_id or not store_id:
+            flash("Employee and store are required.", "danger")
+            return render_template("admin_shift_new.html", employees=employees, stores=stores)
+
+        if not reason:
+            flash("Reason is required for manual shift creation.", "danger")
+            return render_template("admin_shift_new.html", employees=employees, stores=stores)
+
+        cin = parse_local_datetime(clock_in_raw)
+        cout = parse_local_datetime(clock_out_raw) if clock_out_raw else None
+
+        if not cin:
+            flash("Clock-in is required and must be valid.", "danger")
+            return render_template("admin_shift_new.html", employees=employees, stores=stores)
+
+        if cout and cout <= cin:
+            flash("Clock-out must be after clock-in.", "danger")
+            return render_template("admin_shift_new.html", employees=employees, stores=stores)
+
+        s = Shift(
+            employee_id=int(employee_id),
+            store_id=int(store_id),
+            clock_in=cin,
+            clock_out=cout,
+            closed_by_admin=True,
+            admin_closed_by=admin_username(),
+            admin_closed_at=now_tz(),
+            admin_close_reason=reason
+        )
+        db.session.add(s)
+        db.session.commit()
+
+        audit = ShiftEditAudit(
+            shift_id=s.id,
+            action="create",
+            editor=admin_username(),
+            reason=reason,
+            old_clock_in=None,
+            old_clock_out=None,
+            new_clock_in=s.clock_in,
+            new_clock_out=s.clock_out
+        )
+        db.session.add(audit)
+        db.session.commit()
+
+        flash("Manual shift created.", "success")
+        return redirect(url_for("admin_shifts"))
+
+    return render_template("admin_shift_new.html", employees=employees, stores=stores)
+
+# ✅ Step 2: Edit shift (manual correction)
+@app.route("/admin/shifts/<int:shift_id>/edit", methods=["GET", "POST"])
+def admin_shift_edit(shift_id: int):
+    guard = admin_guard()
+    if guard: return guard
+
+    s = Shift.query.get(shift_id)
+    if not s:
+        flash("Shift not found.", "danger")
+        return redirect(url_for("admin_shifts"))
+
+    employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
+    stores = Store.query.order_by(Store.name.asc()).all()
+
+    if request.method == "POST":
+        employee_id = request.form.get("employee_id")
+        store_id = request.form.get("store_id")
+        clock_in_raw = request.form.get("clock_in")
+        clock_out_raw = request.form.get("clock_out")
+        reason = (request.form.get("reason") or "").strip()
+
+        if not reason:
+            flash("Reason is required for shift edits.", "danger")
+            return render_template("admin_shift_edit.html", s=s, employees=employees, stores=stores)
+
+        cin = parse_local_datetime(clock_in_raw)
+        cout = parse_local_datetime(clock_out_raw) if clock_out_raw else None
+
+        if not cin:
+            flash("Clock-in must be valid.", "danger")
+            return render_template("admin_shift_edit.html", s=s, employees=employees, stores=stores)
+
+        if cout and cout <= cin:
+            flash("Clock-out must be after clock-in.", "danger")
+            return render_template("admin_shift_edit.html", s=s, employees=employees, stores=stores)
+
+        old_in = s.clock_in
+        old_out = s.clock_out
+
+        s.employee_id = int(employee_id) if employee_id else s.employee_id
+        s.store_id = int(store_id) if store_id else s.store_id
+        s.clock_in = cin
+        s.clock_out = cout
+
+        # mark as admin-touched
+        s.closed_by_admin = True
+        s.admin_closed_by = admin_username()
+        s.admin_closed_at = now_tz()
+        s.admin_close_reason = reason
+
+        audit = ShiftEditAudit(
+            shift_id=s.id,
+            action="edit",
+            editor=admin_username(),
+            reason=reason,
+            old_clock_in=old_in,
+            old_clock_out=old_out,
+            new_clock_in=s.clock_in,
+            new_clock_out=s.clock_out
+        )
+        db.session.add(audit)
+        db.session.commit()
+
+        flash("Shift updated (audit logged).", "success")
+        return redirect(url_for("admin_shifts"))
+
+    return render_template("admin_shift_edit.html", s=s, employees=employees, stores=stores)
+
+# ✅ Step 2: Audit log view
+@app.get("/admin/audit")
+def admin_audit():
+    guard = admin_guard()
+    if guard: return guard
+
+    audits = ShiftEditAudit.query.order_by(ShiftEditAudit.created_at.desc()).limit(500).all()
+    return render_template("admin_audit.html", audits=audits)
 
 @app.get("/admin/payroll")
 def admin_payroll():
@@ -941,10 +1182,10 @@ def admin_payroll():
     ).order_by(Shift.clock_out.asc()).all()
 
     rows = []
-    totals_by_emp = {}
+    totals_by_emp_min = {}
 
     for s in shifts:
-        hrs = shift_hours(s)
+        mins = shift_minutes(s)
         emp_name = s.employee.name
         store_name = s.store.name
 
@@ -953,12 +1194,25 @@ def admin_payroll():
             "store": store_name,
             "clock_in": fmt_dt(s.clock_in),
             "clock_out": fmt_dt(s.clock_out),
-            "hours": round(hrs, 2),
+            "minutes": mins,
+            "human": minutes_to_human(mins),
+            "hours_decimal": minutes_to_decimal_hours(mins, places=4),
         })
-        totals_by_emp[emp_name] = totals_by_emp.get(emp_name, 0.0) + hrs
+        totals_by_emp_min[emp_name] = totals_by_emp_min.get(emp_name, 0) + mins
 
-    summary = [{"employee": k, "hours": round(v, 2)} for k, v in sorted(totals_by_emp.items(), key=lambda x: x[0].lower())]
-    grand_total = round(sum(totals_by_emp.values()), 2)
+    summary = []
+    for emp_name in sorted(totals_by_emp_min.keys(), key=lambda x: x.lower()):
+        m = totals_by_emp_min[emp_name]
+        summary.append({
+            "employee": emp_name,
+            "minutes": m,
+            "human": minutes_to_human(m),
+            "hours_decimal": minutes_to_decimal_hours(m, places=4),
+        })
+
+    grand_minutes = sum(totals_by_emp_min.values())
+    grand_human = minutes_to_human(grand_minutes)
+    grand_hours_decimal = minutes_to_decimal_hours(grand_minutes, places=4)
 
     if out_format == "csv":
         from io import StringIO
@@ -970,15 +1224,15 @@ def admin_payroll():
         w.writerow(["Payroll Week End", end_dt.date().isoformat()])
         w.writerow([])
 
-        w.writerow(["Employee", "Total Hours"])
+        w.writerow(["Employee", "Total Minutes", "Total Hours (Decimal)"])
         for item in summary:
-            w.writerow([item["employee"], item["hours"]])
-        w.writerow(["GRAND TOTAL", grand_total])
+            w.writerow([item["employee"], item["minutes"], item["hours_decimal"]])
+        w.writerow(["GRAND TOTAL", grand_minutes, grand_hours_decimal])
         w.writerow([])
 
-        w.writerow(["Employee", "Store", "Clock In", "Clock Out", "Hours"])
+        w.writerow(["Employee", "Store", "Clock In", "Clock Out", "Minutes", "Hours (Decimal)"])
         for r in rows:
-            w.writerow([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["hours"]])
+            w.writerow([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["minutes"], r["hours_decimal"]])
 
         output = si.getvalue()
         filename = f"payroll_{start_dt.date().isoformat()}_to_{end_dt.date().isoformat()}.csv"
@@ -994,9 +1248,10 @@ def admin_payroll():
         end=end_dt.date().isoformat(),
         summary=summary,
         rows=rows,
-        grand_total=grand_total
+        grand_minutes=grand_minutes,
+        grand_human=grand_human,
+        grand_hours_decimal=grand_hours_decimal
     )
-
 
 # -----------------------------
 # Index
@@ -1005,11 +1260,8 @@ def admin_payroll():
 def index():
     return redirect(url_for("employee_page"))
 
-
 # -----------------------------
-# Run
+# Run (local only)
 # -----------------------------
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 5000)), debug=True)

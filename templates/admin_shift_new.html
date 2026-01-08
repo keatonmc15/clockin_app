@@ -1,0 +1,54 @@
+{% extends "base_admin.html" %}
+{% set title = "Add Shift" %}
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h2 class="m-0">Add Shift (Manual)</h2>
+  <a class="btn btn-outline-secondary" href="{{ url_for('admin_shifts') }}">Back</a>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <form method="post" class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label">Employee</label>
+        <select class="form-select" name="employee_id" required>
+          <option value="" selected disabled>Select employee</option>
+          {% for e in employees %}
+            <option value="{{ e.id }}">{{ e.name }}{% if not e.active %} (inactive){% endif %}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Store</label>
+        <select class="form-select" name="store_id" required>
+          <option value="" selected disabled>Select store</option>
+          {% for s in stores %}
+            <option value="{{ s.id }}">{{ s.name }} ({{ s.qr_token }})</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Clock In</label>
+        <input type="datetime-local" class="form-control" name="clock_in" required>
+        <div class="form-text">Uses America/Chicago for display. Seconds ignored (minute-accurate).</div>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Clock Out (optional)</label>
+        <input type="datetime-local" class="form-control" name="clock_out">
+      </div>
+
+      <div class="col-12">
+        <label class="form-label">Reason (required)</label>
+        <textarea class="form-control" name="reason" rows="3" placeholder="Example: Phone died; manager verified times" required></textarea>
+      </div>
+
+      <div class="col-12">
+        <button class="btn btn-dark" type="submit">Create Shift</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}
