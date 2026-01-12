@@ -14,6 +14,11 @@ from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import func
 
+# ✅ XLSX export support
+from openpyxl import Workbook
+from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
+
 # -----------------------------
 # Timezone (Windows-safe)
 # -----------------------------
@@ -1387,7 +1392,7 @@ def admin_payroll():
     rows = []
     totals_by_emp_min = {}
 
-    # NEW: Option A grid aggregation:
+    # Option A grid aggregation:
     # weekly_map[employee][weekday_index][store_name] = minutes
     weekly_map: dict[str, dict[int, dict[str, int]]] = {}
 
@@ -1434,6 +1439,9 @@ def admin_payroll():
     grand_human_short = minutes_to_short(grand_minutes)
     grand_hours_decimal = minutes_to_decimal_hours(grand_minutes, places=4)
 
+    # -----------------------------
+    # CSV export
+    # -----------------------------
     if out_format == "csv":
         from io import StringIO
 
@@ -1460,7 +1468,6 @@ def admin_payroll():
                     day_cells.append("0h 00m")
                     continue
 
-                # Build: "Store A 4h 15m; Store B 2h 00m"
                 parts = []
                 for store_name in sorted(stores_for_day.keys(), key=lambda x: x.lower()):
                     m = stores_for_day[store_name]
@@ -1488,14 +1495,141 @@ def admin_payroll():
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
+    # -----------------------------
+    # XLSX export (ALL widths = 25)
+    # -----------------------------
+    if out_format == "xlsx":
+        from io import BytesIO
+
+        wb = Workbook()
+
+        header_font = Font(bold=True)
+        wrap = Alignment(wrap_text=True, vertical="top")
+
+        # ---- Sheet 1: Weekly ----
+        ws = wb.active
+        ws.title = "Weekly"
+
+        ws.append(["Payroll Week Start (local)", start_dt.date().isoformat()])
+        ws.append(["Payroll Week End (local)", end_dt.date().isoformat()])
+        ws.append(["Note", "Weekly filter uses CLOCK-OUT date; day columns assign time to CLOCK-IN day (local)."])
+        ws.append([])
+
+        headers = ["Employee", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Total"]
+        ws.append(headers)
+
+        for col_idx in range(1, len(headers) + 1):
+            c = ws.cell(row=ws.max_row, column=col_idx)
+            c.font = header_font
+            c.alignment = wrap
+
+        for emp_name in sorted(weekly_map.keys(), key=lambda x: x.lower()):
+            day_cells = []
+            total_emp = 0
+
+            for wd in range(7):
+                stores_for_day = weekly_map.get(emp_name, {}).get(wd, {})
+                if not stores_for_day:
+                    day_cells.append("0h 00m")
+                    continue
+
+                parts = []
+                for store_name in sorted(stores_for_day.keys(), key=lambda x: x.lower()):
+                    m = stores_for_day[store_name]
+                    total_emp += m
+                    parts.append(f"{store_name} {minutes_to_short(m)}")
+
+                day_cells.append("; ".join(parts))
+
+            ws.append([emp_name] + day_cells + [minutes_to_short(total_emp)])
+
+        ws.append(["GRAND TOTAL", "", "", "", "", "", "", "", grand_human_short])
+
+        max_col = len(headers)
+        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=max_col):
+            for cell in row:
+                cell.alignment = wrap
+
+        for col_idx in range(1, max_col + 1):
+            ws.column_dimensions[get_column_letter(col_idx)].width = 25
+
+        ws.freeze_panes = "A6"
+
+        # ---- Sheet 2: Shift Detail ----
+        ws2 = wb.create_sheet("Shift Detail")
+        detail_headers = ["Employee", "Store", "Clock In", "Clock Out", "Minutes", "Time (Short)"]
+        ws2.append(detail_headers)
+
+        for col_idx in range(1, len(detail_headers) + 1):
+            c = ws2.cell(row=1, column=col_idx)
+            c.font = header_font
+            c.alignment = wrap
+
+        for r in rows:
+            ws2.append([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["minutes"], r["human_short"]])
+
+        max_col2 = len(detail_headers)
+        for row in ws2.iter_rows(min_row=1, max_row=ws2.max_row, min_col=1, max_col=max_col2):
+            for cell in row:
+                cell.alignment = wrap
+
+        for col_idx in range(1, max_col2 + 1):
+            ws2.column_dimensions[get_column_letter(col_idx)].width = 25
+
+        ws2.freeze_panes = "A2"
+
+        bio = BytesIO()
+        wb.save(bio)
+        bio.seek(0)
+
+        filename = f"payroll_{start_dt.date().isoformat()}_to_{end_dt.date().isoformat()}.xlsx"
+        return Response(
+            bio.getvalue(),
+            mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f"attachment; filename={filename}"}
+        )
+
+    # -----------------------------
+    # ✅ Build Option A grid for the UI page (Mon–Sun)
+    # -----------------------------
+    day_headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+    grid_rows = []
+
+    for emp_name in sorted(weekly_map.keys(), key=lambda x: x.lower()):
+        day_cells = []
+        total_emp = 0
+
+        for wd in range(7):
+            stores_for_day = weekly_map.get(emp_name, {}).get(wd, {})
+            if not stores_for_day:
+                day_cells.append("0h 00m")
+                continue
+
+            parts = []
+            for store_name in sorted(stores_for_day.keys(), key=lambda x: x.lower()):
+                m = stores_for_day[store_name]
+                total_emp += m
+                parts.append(f"{store_name} {minutes_to_short(m)}")
+
+            day_cells.append("; ".join(parts))
+
+        grid_rows.append({
+            "employee": emp_name,
+            "days": day_cells,
+            "total": minutes_to_short(total_emp),
+        })
+
     return render_template(
         "payroll.html",
         start=start_dt.date().isoformat(),
         end=end_dt.date().isoformat(),
         summary=summary,
         rows=rows,
+        day_headers=day_headers,
+        grid_rows=grid_rows,
         grand_minutes=grand_minutes,
         grand_human=grand_human,
+        grand_human_short=grand_human_short,
         grand_hours_decimal=grand_hours_decimal
     )
 

@@ -22,11 +22,9 @@
     table { width: 100%; border-collapse: collapse; }
     th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
     th { background: #fafafa; font-size: 13px; }
-    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-    @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
-    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; background:#f2f2f2; font-size: 12px; }
     .right { text-align:right; }
-    details summary { cursor: pointer; }
+    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; background:#f2f2f2; font-size: 12px; }
+    .grid-table td { white-space: normal; }
   </style>
 </head>
 
@@ -41,6 +39,7 @@
     <div style="display:flex; gap:10px; flex-wrap:wrap;">
       <a class="btn" href="{{ url_for('admin_dashboard') }}">Back to Dashboard</a>
       <a class="btn primary" href="{{ url_for('admin_payroll', start=start, end=end, format='csv') }}">Export CSV</a>
+      <a class="btn primary" href="{{ url_for('admin_payroll', start=start, end=end, format='xlsx') }}">Export XLSX</a>
     </div>
   </div>
 
@@ -65,99 +64,77 @@
     </form>
   </div>
 
-  <div class="grid2">
-    <div class="card">
-      <h3 style="margin-top:0;">Employee totals</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Employee</th>
-            <th class="right">Total</th>
-            <th class="right">Regular</th>
-            <th class="right">OT</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for emp in emp_summary %}
-          <tr>
-            <td>
-              <div><strong>{{ emp.employee }}</strong></div>
-              <div class="muted" style="margin-top:4px;">
-                <details>
-                  <summary>Store breakdown</summary>
-                  <div style="margin-top:8px;">
-                    {% if emp.stores and emp.stores|length > 0 %}
-                      <table>
-                        <thead>
-                          <tr>
-                            <th>Store</th>
-                            <th class="right">Hours</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {% for st in emp.stores %}
-                          <tr>
-                            <td>{{ st.store }}</td>
-                            <td class="right">{{ st.hours }}</td>
-                          </tr>
-                          {% endfor %}
-                        </tbody>
-                      </table>
-                    {% else %}
-                      <div class="muted">No store detail.</div>
-                    {% endif %}
-                  </div>
-                </details>
-              </div>
-            </td>
-            <td class="right">{{ emp.hours }}</td>
-            <td class="right">{{ emp.regular_hours }}</td>
-            <td class="right">
-              {% if emp.overtime_hours and emp.overtime_hours > 0 %}
-                <span class="pill">{{ emp.overtime_hours }}</span>
-              {% else %}
-                0.00
-              {% endif %}
-            </td>
-          </tr>
-          {% endfor %}
-        </tbody>
-        <tfoot>
-          <tr>
-            <th>Grand total</th>
-            <th class="right">{{ grand_total }}</th>
-            <th></th>
-            <th></th>
-          </tr>
-        </tfoot>
-      </table>
+  <!-- ✅ Mon–Sun Grid -->
+  <div class="card">
+    <h3 style="margin-top:0;">Mon–Sun Grid (by Clock-In Day)</h3>
+    <div class="muted" style="margin-bottom:10px;">
+      Each day cell shows store breakdown like: <span class="pill">Store Name 4h 15m</span>
     </div>
 
-    <div class="card">
-      <h3 style="margin-top:0;">Store totals</h3>
-      <table>
-        <thead>
-          <tr>
-            <th>Store</th>
-            <th class="right">Hours</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for st in store_summary %}
-          <tr>
-            <td><strong>{{ st.store }}</strong></td>
-            <td class="right">{{ st.hours }}</td>
-          </tr>
+    <table class="grid-table">
+      <thead>
+        <tr>
+          <th>Employee</th>
+          {% for d in day_headers %}
+            <th>{{ d }}</th>
           {% endfor %}
-        </tbody>
-        <tfoot>
+          <th class="right">Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for gr in grid_rows %}
           <tr>
-            <th>Grand total</th>
-            <th class="right">{{ grand_total }}</th>
+            <td><strong>{{ gr.employee }}</strong></td>
+            {% for cell in gr.days %}
+              <td>{{ cell }}</td>
+            {% endfor %}
+            <td class="right"><span class="pill">{{ gr.total }}</span></td>
           </tr>
-        </tfoot>
-      </table>
-    </div>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th>Grand total</th>
+          <th colspan="7"></th>
+          <th class="right">
+            <span class="pill">{{ grand_human_short if grand_human_short is defined else grand_human }}</span>
+          </th>
+        </tr>
+      </tfoot>
+    </table>
+
+    {% if grid_rows|length == 0 %}
+      <div class="muted" style="margin-top:10px;">No shifts found for this date range.</div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h3 style="margin-top:0;">Employee totals</h3>
+    <table>
+      <thead>
+        <tr>
+          <th>Employee</th>
+          <th class="right">Total Minutes</th>
+          <th class="right">Total (Short)</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for emp in summary %}
+        <tr>
+          <td><strong>{{ emp.employee }}</strong></td>
+          <td class="right">{{ emp.minutes }}</td>
+          <td class="right"><span class="pill">{{ emp.human_short }}</span></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+      <tfoot>
+        <tr>
+          <th>Grand total</th>
+          <th class="right">{{ grand_minutes }}</th>
+          <th class="right"><span class="pill">{{ grand_human_short if grand_human_short is defined else grand_human }}</span></th>
+        </tr>
+      </tfoot>
+    </table>
   </div>
 
   <div class="card">
@@ -172,7 +149,8 @@
           <th>Store</th>
           <th>Clock In</th>
           <th>Clock Out</th>
-          <th class="right">Hours</th>
+          <th class="right">Minutes</th>
+          <th class="right">Time</th>
         </tr>
       </thead>
       <tbody>
@@ -182,7 +160,8 @@
           <td>{{ r.store }}</td>
           <td>{{ r.clock_in }}</td>
           <td>{{ r.clock_out }}</td>
-          <td class="right">{{ r.hours }}</td>
+          <td class="right">{{ r.minutes }}</td>
+          <td class="right">{{ r.human_short }}</td>
         </tr>
         {% endfor %}
       </tbody>
