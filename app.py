@@ -1417,6 +1417,17 @@ def admin_payroll():
         grand_hours_decimal=grand_hours_decimal
     )
 
+ ✅ Backwards-compatible alias for old Reports link
+@app.get("/admin/reports/hours")
+def admin_reports_hours():
+    guard = admin_guard()
+    if guard:
+        return guard
+
+    # preserve querystring if present
+    args = request.args.to_dict(flat=True)
+    return redirect(url_for("admin_payroll", **args))
+
 # -----------------------------
 # Index
 # -----------------------------
