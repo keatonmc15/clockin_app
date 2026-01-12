@@ -43,20 +43,23 @@
 
         <div class="mb-2">
           <label class="form-label" for="store_code">Store Code</label>
-          <input
-            id="store_code"
-            class="form-control form-control-lg"
-            placeholder="Start typing store name or code…"
-            list="storeList"
-            autocomplete="off"
-            autocapitalize="characters"
-            spellcheck="false"
-          />
-          <datalist id="storeList">
-            {% for s in stores %}
-              <option value="{{ s.code }}">{{ s.name }}</option>
-            {% endfor %}
-          </datalist>
+
+          <div class="position-relative">
+            <input
+              id="store_code"
+              class="form-control form-control-lg"
+              placeholder="Start typing store name or code…"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+            />
+
+            <div id="storeSuggest"
+                 class="list-group position-absolute w-100 shadow-sm d-none"
+                 style="z-index: 20; max-height: 260px; overflow:auto;">
+            </div>
+          </div>
+
           <div id="storeName" class="tiny muted mt-1"></div>
         </div>
 
@@ -104,6 +107,43 @@
   const PING_MAX_AGE_MS = 60 * 1000;      // allow cached GPS up to 1 minute for pings
   let pingTimer = null;
 
+  // ---- Store autocomplete (API-backed) ----
+  let LAST_SUGGEST = [];
+  let suggestTimer = null;
+
+  function suggestBox() { return document.getElementById("storeSuggest"); }
+
+  function hideSuggest() {
+    const box = suggestBox();
+    box.classList.add("d-none");
+    box.innerHTML = "";
+  }
+
+  function showSuggest(items) {
+    const box = suggestBox();
+    if (!items || !items.length) return hideSuggest();
+
+    box.innerHTML = items.map(s => {
+      const label = `${s.code} — ${s.name}`;
+      return `<button type="button"
+                      class="list-group-item list-group-item-action"
+                      data-code="${s.code}"
+                      data-name="${s.name}">${label}</button>`;
+    }).join("");
+
+    box.classList.remove("d-none");
+  }
+
+  async function fetchStoreSuggest(q) {
+    try {
+      const res = await fetch(`/api/stores/suggest?q=${encodeURIComponent(q)}`);
+      if (!res.ok) return [];
+      return await res.json();
+    } catch (e) {
+      return [];
+    }
+  }
+
   function isClockedIn() {
     return localStorage.getItem(LS_CLOCKED_IN) === "1";
   }
@@ -112,7 +152,6 @@
     if (on) {
       localStorage.setItem(LS_CLOCKED_IN, "1");
       if (payload.name) localStorage.setItem(LS_CLOCKED_NAME, payload.name);
-;
       if (payload.shift_id !== undefined && payload.shift_id !== null) {
         localStorage.setItem(LS_CLOCKED_SHIFT_ID, String(payload.shift_id));
       }
@@ -196,7 +235,14 @@
 
   function updateStoreName() {
     const code = normalizeStoreInput();
-    const match = STORES.find(s => String(s.code).toLowerCase() === code);
+    let match = STORES.find(s => String(s.code).toLowerCase() === code);
+
+    // fallback: latest suggestions (in case STORES list is stale)
+    if (!match && LAST_SUGGEST.length) {
+      const sug = LAST_SUGGEST.find(s => String(s.code).toLowerCase() === code);
+      if (sug) match = { name: sug.name, code: sug.code };
+    }
+
     document.getElementById("storeName").textContent = match ? `Selected: ${match.name}` : "";
   }
 
@@ -241,10 +287,11 @@
     }
 
     // Inputs:
-    // - PIN stays usable so employee can type PIN to clock out
-    // - Store code stays locked while clocked in (prevents accidental store changes)
     pinInput.disabled = BUSY;               // ✅ allow PIN entry while clocked in
     storeInput.disabled = clocked || BUSY;  // ✅ lock store while clocked in
+
+    // If store input becomes disabled, hide suggestions
+    if (storeInput.disabled) hideSuggest();
 
     // Buttons
     btnIn.disabled = BUSY || clocked;
@@ -316,10 +363,49 @@
     }
   });
 
+  // Store input: update selected store + query suggestions
   document.getElementById("store_code").addEventListener("input", () => {
     updateStoreName();
     const code = normalizeStoreInput();
     if (code) localStorage.setItem(LS_LAST_STORE, code);
+
+    // no suggestions if locked
+    if (document.getElementById("store_code").disabled) return hideSuggest();
+
+    clearTimeout(suggestTimer);
+    const q = (document.getElementById("store_code").value || "").trim();
+    if (q.length < 2) return hideSuggest();
+
+    suggestTimer = setTimeout(async () => {
+      const results = await fetchStoreSuggest(q);
+      LAST_SUGGEST = results || [];
+      showSuggest(LAST_SUGGEST);
+    }, 120);
+  });
+
+  // Click handling for suggestion list + outside click closes it
+  document.addEventListener("click", (e) => {
+    const box = suggestBox();
+    const inp = document.getElementById("store_code");
+    const btn = e.target.closest("button[data-code]");
+
+    if (btn && box.contains(btn)) {
+      inp.value = String(btn.dataset.code || "").toLowerCase();
+      localStorage.setItem(LS_LAST_STORE, inp.value);
+      LAST_SUGGEST = [];
+      hideSuggest();
+      updateStoreName();
+      return;
+    }
+
+    if (!box.classList.contains("d-none") && e.target !== inp && !box.contains(e.target)) {
+      hideSuggest();
+    }
+  });
+
+  // small delay so a click can register before hiding
+  document.getElementById("store_code").addEventListener("blur", () => {
+    setTimeout(() => hideSuggest(), 150);
   });
 
   window.addEventListener("beforeunload", (e) => {

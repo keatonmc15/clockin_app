@@ -260,6 +260,7 @@ def shift_minutes(shift: "Shift") -> int:
     return int(seconds // 60)  # whole minutes
 
 def minutes_to_human(minutes: int) -> str:
+    """Legacy human formatting (kept for templates / API responses)."""
     if minutes <= 0:
         return "0 min"
     hours = minutes // 60
@@ -270,6 +271,14 @@ def minutes_to_human(minutes: int) -> str:
         return f"{hours} hr"
     else:
         return f"{mins} min"
+
+def minutes_to_short(minutes: int) -> str:
+    """Short format for payroll: '4h 15m' (always shows hours + 2-digit minutes)."""
+    if minutes <= 0:
+        return "0h 00m"
+    h = minutes // 60
+    m = minutes % 60
+    return f"{h}h {m:02d}m"
 
 def minutes_to_decimal_hours(minutes: int, places: int = 4) -> str:
     if minutes <= 0:
@@ -328,6 +337,7 @@ def inject_helpers():
         fmt_dt=fmt_dt,
         shift_minutes=shift_minutes,
         minutes_to_human=minutes_to_human,
+        minutes_to_short=minutes_to_short,
         minutes_to_decimal_hours=minutes_to_decimal_hours
     )
 
@@ -354,6 +364,34 @@ def fingerprint():
 @app.get("/favicon.ico")
 def favicon():
     return ("", 204)
+
+# -----------------------------
+# Store Suggest API (Autocomplete)
+# -----------------------------
+@app.get("/api/stores/suggest")
+def api_stores_suggest():
+    """
+    Autocomplete support for employee store-code entry.
+    Query: /api/stores/suggest?q=rea
+    Returns: [{code, name}] (code is qr_token)
+    """
+    q = (request.args.get("q") or "").strip()
+    if not q:
+        return jsonify([])
+
+    ql = q.lower()
+    matches = (
+        Store.query
+        .filter(
+            (func.lower(Store.qr_token).like(f"%{ql}%")) |
+            (func.lower(Store.name).like(f"%{ql}%"))
+        )
+        .order_by(Store.name.asc())
+        .limit(10)
+        .all()
+    )
+
+    return jsonify([{"code": s.qr_token, "name": s.name} for s in matches])
 
 # -----------------------------
 # Employee Clock Page
@@ -1345,25 +1383,41 @@ def admin_payroll():
         Shift.clock_out <= q_end
     ).order_by(Shift.clock_out.asc()).all()
 
+    # Detail rows (still useful for auditing)
     rows = []
     totals_by_emp_min = {}
+
+    # NEW: Option A grid aggregation:
+    # weekly_map[employee][weekday_index][store_name] = minutes
+    weekly_map: dict[str, dict[int, dict[str, int]]] = {}
 
     for s in shifts:
         mins = shift_minutes(s)
         emp_name = s.employee.name
         store_name = s.store.name
 
+        # Detail
         rows.append({
             "employee": emp_name,
             "store": store_name,
             "clock_in": fmt_dt(s.clock_in),
             "clock_out": fmt_dt(s.clock_out),
             "minutes": mins,
-            "human": minutes_to_human(mins),
-            "hours_decimal": minutes_to_decimal_hours(mins, places=4),
+            "human_short": minutes_to_short(mins),
         })
         totals_by_emp_min[emp_name] = totals_by_emp_min.get(emp_name, 0) + mins
 
+        # Assign to CLOCK-IN day (LOCAL)
+        cin_local = utc_naive_to_local(s.clock_in)
+        wd = cin_local.weekday()  # Mon=0 ... Sun=6
+
+        if emp_name not in weekly_map:
+            weekly_map[emp_name] = {}
+        if wd not in weekly_map[emp_name]:
+            weekly_map[emp_name][wd] = {}
+        weekly_map[emp_name][wd][store_name] = weekly_map[emp_name][wd].get(store_name, 0) + mins
+
+    # Summary list (kept for the UI page)
     summary = []
     for emp_name in sorted(totals_by_emp_min.keys(), key=lambda x: x.lower()):
         m = totals_by_emp_min[emp_name]
@@ -1371,11 +1425,13 @@ def admin_payroll():
             "employee": emp_name,
             "minutes": m,
             "human": minutes_to_human(m),
+            "human_short": minutes_to_short(m),
             "hours_decimal": minutes_to_decimal_hours(m, places=4),
         })
 
     grand_minutes = sum(totals_by_emp_min.values())
     grand_human = minutes_to_human(grand_minutes)
+    grand_human_short = minutes_to_short(grand_minutes)
     grand_hours_decimal = minutes_to_decimal_hours(grand_minutes, places=4)
 
     if out_format == "csv":
@@ -1384,19 +1440,45 @@ def admin_payroll():
         si = StringIO()
         w = csv.writer(si)
 
-        w.writerow(["Payroll Week Start", start_dt.date().isoformat()])
-        w.writerow(["Payroll Week End", end_dt.date().isoformat()])
+        # Header
+        w.writerow(["Payroll Week Start (local)", start_dt.date().isoformat()])
+        w.writerow(["Payroll Week End (local)", end_dt.date().isoformat()])
+        w.writerow(["Note", "Weekly filter uses CLOCK-OUT date; day columns assign time to CLOCK-IN day (local)."])
         w.writerow([])
 
-        w.writerow(["Employee", "Total Minutes", "Total Hours (Decimal)"])
-        for item in summary:
-            w.writerow([item["employee"], item["minutes"], item["hours_decimal"]])
-        w.writerow(["GRAND TOTAL", grand_minutes, grand_hours_decimal])
+        # Option A grid
+        day_headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        w.writerow(["Employee"] + day_headers + ["Total"])
+
+        for emp_name in sorted(weekly_map.keys(), key=lambda x: x.lower()):
+            day_cells = []
+            total_emp = 0
+
+            for wd in range(7):
+                stores_for_day = weekly_map.get(emp_name, {}).get(wd, {})
+                if not stores_for_day:
+                    day_cells.append("0h 00m")
+                    continue
+
+                # Build: "Store A 4h 15m; Store B 2h 00m"
+                parts = []
+                for store_name in sorted(stores_for_day.keys(), key=lambda x: x.lower()):
+                    m = stores_for_day[store_name]
+                    total_emp += m
+                    parts.append(f"{store_name} {minutes_to_short(m)}")
+
+                day_cells.append("; ".join(parts))
+
+            w.writerow([emp_name] + day_cells + [minutes_to_short(total_emp)])
+
+        w.writerow(["GRAND TOTAL"] + [""] * 7 + [grand_human_short])
         w.writerow([])
 
-        w.writerow(["Employee", "Store", "Clock In", "Clock Out", "Minutes", "Hours (Decimal)"])
+        # Detail section (audit)
+        w.writerow(["Shift Detail"])
+        w.writerow(["Employee", "Store", "Clock In", "Clock Out", "Minutes", "Time (Short)"])
         for r in rows:
-            w.writerow([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["minutes"], r["hours_decimal"]])
+            w.writerow([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["minutes"], r["human_short"]])
 
         output = si.getvalue()
         filename = f"payroll_{start_dt.date().isoformat()}_to_{end_dt.date().isoformat()}.csv"
@@ -1405,6 +1487,7 @@ def admin_payroll():
             mimetype="text/csv",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
+
     return render_template(
         "payroll.html",
         start=start_dt.date().isoformat(),
