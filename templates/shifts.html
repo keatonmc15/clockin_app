@@ -21,7 +21,7 @@
             <th>Clock In</th>
             <th>Clock Out</th>
             <th>Worked</th>
-            <th style="width: 240px;"></th>
+            <th style="width: 320px;"></th>
           </tr>
         </thead>
         <tbody>
@@ -46,6 +46,13 @@
               {% endif %}
             </td>
             <td class="text-nowrap">
+
+              <!-- ✅ NEW: View GPS pings for this shift -->
+              <a class="btn btn-sm btn-outline-secondary me-1"
+                 href="{{ url_for('admin_shift_pings', shift_id=s.id) }}">
+                View GPS
+              </a>
+
               <a class="btn btn-sm btn-outline-primary me-1"
                  href="{{ url_for('admin_shift_edit', shift_id=s.id) }}">
                 Edit

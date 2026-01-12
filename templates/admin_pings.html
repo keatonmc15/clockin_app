@@ -1,0 +1,151 @@
+{% extends "base.html" %}
+{% block title %}GPS Pings{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div style="font-size:28px; font-weight:800;">GPS Pings</div>
+    <div style="color:#6b7280; margin-top:6px;">
+      Review 15-minute location pings (distance + inside/outside geofence).
+      {% if total_in_view is not none %}
+        <span style="margin-left:10px;"><code>{{ total_in_view }}</code> results</span>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="card">
+    <form method="get">
+      <div style="display:grid; grid-template-columns: repeat(6, 1fr); gap:10px;">
+        <div>
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Start</div>
+          <input type="date" name="start" value="{{ start }}">
+        </div>
+        <div>
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">End</div>
+          <input type="date" name="end" value="{{ end }}">
+        </div>
+
+        <div>
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Employee</div>
+          <select name="employee_id" style="padding:8px 10px; width:100%; border:1px solid #d1d5db; border-radius:8px; font-size:14px;">
+            <option value="">All</option>
+            {% for e in employees %}
+              <option value="{{ e.id }}" {% if employee_id|string == e.id|string %}selected{% endif %}>
+                {{ e.name }}{% if not e.active %} (inactive){% endif %}
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div>
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Store</div>
+          <select name="store_id" style="padding:8px 10px; width:100%; border:1px solid #d1d5db; border-radius:8px; font-size:14px;">
+            <option value="">All</option>
+            {% for s in stores %}
+              <option value="{{ s.id }}" {% if store_id|string == s.id|string %}selected{% endif %}>
+                {{ s.name }} ({{ s.qr_token }})
+              </option>
+            {% endfor %}
+          </select>
+        </div>
+
+        <div>
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Inside Radius</div>
+          <select name="inside" style="padding:8px 10px; width:100%; border:1px solid #d1d5db; border-radius:8px; font-size:14px;">
+            <option value="all" {% if inside == 'all' %}selected{% endif %}>All</option>
+            <option value="1" {% if inside == '1' %}selected{% endif %}>Inside</option>
+            <option value="0" {% if inside == '0' %}selected{% endif %}>Outside</option>
+          </select>
+        </div>
+
+        <div>
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Shift ID</div>
+          <input name="shift_id" value="{{ shift_id }}" placeholder="e.g. 123">
+        </div>
+      </div>
+
+      <div style="display:flex; gap:10px; margin-top:12px; align-items:center; justify-content:space-between;">
+        <div style="display:flex; gap:10px; align-items:center;">
+          <button class="btn btn-primary" type="submit">Filter</button>
+          <a class="btn" href="{{ url_for('admin_pings') }}">Reset</a>
+        </div>
+
+        <div style="display:flex; gap:10px; align-items:center;">
+          <div style="font-size:12px; color:#6b7280;">Per page</div>
+          <select name="per_page" style="padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; font-size:14px;">
+            {% for n in [50,100,200,300,500] %}
+              <option value="{{ n }}" {% if per_page|string == n|string %}selected{% endif %}>{{ n }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Time (local)</th>
+          <th>Employee</th>
+          <th>Store</th>
+          <th>Shift</th>
+          <th>Dist (m)</th>
+          <th>Status</th>
+          <th>Lat</th>
+          <th>Lng</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% if not pings %}
+          <tr>
+            <td colspan="8" style="padding:16px; color:#6b7280;">No pings found for these filters.</td>
+          </tr>
+        {% else %}
+          {% for p in pings %}
+            <tr>
+              <td>{{ fmt_dt(p.created_at) }}</td>
+              <td>{{ p.employee.name }}</td>
+              <td>{{ p.store.name }}</td>
+              <td>
+                <code>#{{ p.shift_id }}</code>
+                <a style="margin-left:8px; font-size:12px;" href="{{ url_for('admin_shift_edit', shift_id=p.shift_id) }}">edit</a>
+              </td>
+              <td>{{ "%.1f"|format(p.dist_m) }}</td>
+              <td>
+                {% if p.inside_radius %}
+                  <span style="color:#16a34a; font-weight:700;">INSIDE</span>
+                {% else %}
+                  <span style="color:#dc2626; font-weight:700;">OUTSIDE</span>
+                {% endif %}
+              </td>
+              <td>{{ "%.6f"|format(p.lat) }}</td>
+              <td>{{ "%.6f"|format(p.lng) }}</td>
+            </tr>
+          {% endfor %}
+        {% endif %}
+      </tbody>
+    </table>
+
+    {% set base_args = {
+      'start': start,
+      'end': end,
+      'employee_id': employee_id,
+      'store_id': store_id,
+      'shift_id': shift_id,
+      'inside': inside,
+      'per_page': per_page
+    } %}
+
+    <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
+      <div style="font-size:13px; color:#6b7280;">Page {{ page }}</div>
+      <div style="display:flex; gap:10px;">
+        {% if has_prev %}
+          <a class="btn" href="{{ url_for('admin_pings', **base_args, page=page-1) }}">Prev</a>
+        {% endif %}
+        {% if has_next %}
+          <a class="btn" href="{{ url_for('admin_pings', **base_args, page=page+1) }}">Next</a>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+{% endblock %}

@@ -622,18 +622,148 @@ def admin_dashboard():
     guard = admin_guard()
     if guard: return guard
 
+    # ✅ variables your templates/admin.html expects
+    total_employees = Employee.query.count()
+    active_employees = Employee.query.filter_by(active=True).count()
+    inactive_employees = Employee.query.filter_by(active=False).count()
+
+    # (kept: other useful stats in case you want them later)
     open_shifts = Shift.query.filter_by(clock_out=None).count()
-    employees = Employee.query.count()
     stores = Store.query.count()
     last7 = now_utc() - timedelta(days=7)
     shifts_7d = Shift.query.filter(Shift.clock_in >= last7).count()
 
     return render_template(
-        "admin_dashboard.html",
+        "admin.html",
+        total_employees=total_employees,
+        active_employees=active_employees,
+        inactive_employees=inactive_employees,
         open_shifts=open_shifts,
-        employees=employees,
         stores=stores,
         shifts_7d=shifts_7d,
+    )
+
+# ✅ Admin GPS Ping Viewer
+@app.get("/admin/pings")
+def admin_pings():
+    guard = admin_guard()
+    if guard: return guard
+
+    # filters
+    start_str = (request.args.get("start") or "").strip()
+    end_str = (request.args.get("end") or "").strip()
+    employee_id = (request.args.get("employee_id") or "").strip()
+    store_id = (request.args.get("store_id") or "").strip()
+    shift_id = (request.args.get("shift_id") or "").strip()
+    inside_raw = (request.args.get("inside") or "all").strip().lower()
+
+    # pagination
+    try:
+        page = int(request.args.get("page", "1"))
+    except ValueError:
+        page = 1
+    page = max(page, 1)
+
+    try:
+        per_page = int(request.args.get("per_page", "200"))
+    except ValueError:
+        per_page = 200
+    per_page = max(25, min(per_page, 500))
+
+    # default date range = last 7 local days (today inclusive)
+    if not start_str or not end_str:
+        today_local = now_local().date()
+        default_start = today_local - timedelta(days=7)
+        start_str = start_str or default_start.isoformat()
+        end_str = end_str or today_local.isoformat()
+
+    # build local bounds then convert to UTC-naive
+    try:
+        start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
+        end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
+        if APP_TZ:
+            start_local = datetime.combine(start_date, dtime.min, tzinfo=APP_TZ)
+            end_local = datetime.combine(end_date, dtime.max, tzinfo=APP_TZ)
+        else:
+            start_local = datetime.combine(start_date, dtime.min)
+            end_local = datetime.combine(end_date, dtime.max)
+        q_start, q_end = local_range_to_utc_naive(start_local, end_local)
+    except ValueError:
+        flash("Invalid start/end date format. Use YYYY-MM-DD.", "error")
+        today_local = now_local().date()
+        start_local = datetime.combine(today_local - timedelta(days=7), dtime.min, tzinfo=APP_TZ) if APP_TZ else datetime.combine(today_local - timedelta(days=7), dtime.min)
+        end_local = datetime.combine(today_local, dtime.max, tzinfo=APP_TZ) if APP_TZ else datetime.combine(today_local, dtime.max)
+        q_start, q_end = local_range_to_utc_naive(start_local, end_local)
+        start_str = (today_local - timedelta(days=7)).isoformat()
+        end_str = today_local.isoformat()
+
+    # base query
+    q = (
+        LocationPing.query
+        .filter(LocationPing.created_at >= q_start, LocationPing.created_at <= q_end)
+        .order_by(LocationPing.created_at.desc())
+    )
+
+    # apply filters
+    if employee_id:
+        try:
+            q = q.filter(LocationPing.employee_id == int(employee_id))
+        except ValueError:
+            flash("employee_id must be a number.", "error")
+
+    if store_id:
+        try:
+            q = q.filter(LocationPing.store_id == int(store_id))
+        except ValueError:
+            flash("store_id must be a number.", "error")
+
+    if shift_id:
+        try:
+            q = q.filter(LocationPing.shift_id == int(shift_id))
+        except ValueError:
+            flash("shift_id must be a number.", "error")
+
+    inside = "all"
+    if inside_raw in ("1", "true", "yes", "y", "inside"):
+        q = q.filter(LocationPing.inside_radius.is_(True))
+        inside = "1"
+    elif inside_raw in ("0", "false", "no", "n", "outside"):
+        q = q.filter(LocationPing.inside_radius.is_(False))
+        inside = "0"
+
+    # page slice (+1 to detect next page)
+    offset = (page - 1) * per_page
+    items = q.offset(offset).limit(per_page + 1).all()
+    has_next = len(items) > per_page
+    pings = items[:per_page]
+    has_prev = page > 1
+
+    # dropdown data
+    employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
+    stores = Store.query.order_by(Store.name.asc()).all()
+
+    # count (best-effort)
+    try:
+        total_in_view = q.count()
+    except Exception:
+        total_in_view = None
+
+    return render_template(
+        "admin_pings.html",
+        pings=pings,
+        employees=employees,
+        stores=stores,
+        start=start_str,
+        end=end_str,
+        employee_id=employee_id,
+        store_id=store_id,
+        shift_id=shift_id,
+        inside=inside,
+        page=page,
+        per_page=per_page,
+        has_prev=has_prev,
+        has_next=has_next,
+        total_in_view=total_in_view,
     )
 
 # -------- Bulk Import (stores + employees) --------
@@ -785,10 +915,10 @@ def admin_employees():
             pin = (request.form.get("pin") or "").strip()
 
             if not name or not pin:
-                flash("Name and PIN required.", "danger")
+                flash("Name and PIN required.", "error")
             else:
                 if Employee.query.filter_by(pin=pin).first():
-                    flash("PIN already in use.", "danger")
+                    flash("PIN already in use.", "error")
                 else:
                     e = Employee(name=name, pin=pin, active=True)
                     db.session.add(e)
@@ -818,16 +948,16 @@ def admin_employees_update():
 
     emp = Employee.query.get(emp_id)
     if not emp:
-        flash("Employee not found.", "danger")
+        flash("Employee not found.", "error")
         return redirect(url_for("admin_employees"))
 
     if not name or not pin:
-        flash("Name and PIN required.", "danger")
+        flash("Name and PIN required.", "error")
         return redirect(url_for("admin_employees"))
 
     other = Employee.query.filter(Employee.pin == pin, Employee.id != emp.id).first()
     if other:
-        flash("That PIN is already in use.", "danger")
+        flash("That PIN is already in use.", "error")
         return redirect(url_for("admin_employees"))
 
     emp.name = name
@@ -846,12 +976,12 @@ def admin_employees_delete():
     emp_id = request.form.get("employee_id")
     emp = Employee.query.get(emp_id)
     if not emp:
-        flash("Employee not found.", "danger")
+        flash("Employee not found.", "error")
         return redirect(url_for("admin_employees"))
 
     shift_count = Shift.query.filter_by(employee_id=emp.id).count()
     if shift_count > 0:
-        flash("Cannot delete employee with shift history. Deactivate instead.", "warning")
+        flash("Cannot delete employee with shift history. Deactivate instead.", "error")
         return redirect(url_for("admin_employees"))
 
     db.session.delete(emp)
@@ -876,18 +1006,18 @@ def admin_stores():
             radius = request.form.get("geofence_radius_m") or "150"
 
             if not name or not qr_token or not lat or not lng:
-                flash("Name, store code, latitude, and longitude required.", "danger")
+                flash("Name, store code, latitude, and longitude required.", "error")
             else:
                 try:
                     lat = float(lat)
                     lng = float(lng)
                     radius = int(float(radius))
                 except ValueError:
-                    flash("Invalid lat/lng/radius.", "danger")
+                    flash("Invalid lat/lng/radius.", "error")
                 else:
                     existing = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
                     if existing:
-                        flash("Store code already in use.", "danger")
+                        flash("Store code already in use.", "error")
                     else:
                         s = Store(
                             name=name,
@@ -917,11 +1047,11 @@ def admin_stores_update():
 
     store = Store.query.get(store_id)
     if not store:
-        flash("Store not found.", "danger")
+        flash("Store not found.", "error")
         return redirect(url_for("admin_stores"))
 
     if not name or not qr_token or not lat or not lng:
-        flash("Name, store code, latitude, and longitude required.", "danger")
+        flash("Name, store code, latitude, and longitude required.", "error")
         return redirect(url_for("admin_stores"))
 
     try:
@@ -929,12 +1059,12 @@ def admin_stores_update():
         lng = float(lng)
         radius = int(float(radius))
     except ValueError:
-        flash("Invalid lat/lng/radius.", "danger")
+        flash("Invalid lat/lng/radius.", "error")
         return redirect(url_for("admin_stores"))
 
     existing = Store.query.filter(func.lower(Store.qr_token) == qr_token, Store.id != store.id).first()
     if existing:
-        flash("Store code already in use.", "danger")
+        flash("Store code already in use.", "error")
         return redirect(url_for("admin_stores"))
 
     store.name = name
@@ -955,12 +1085,12 @@ def admin_stores_delete():
     store_id = request.form.get("store_id")
     store = Store.query.get(store_id)
     if not store:
-        flash("Store not found.", "danger")
+        flash("Store not found.", "error")
         return redirect(url_for("admin_stores"))
 
     shift_count = Shift.query.filter_by(store_id=store.id).count()
     if shift_count > 0:
-        flash("Cannot delete store with shift history.", "warning")
+        flash("Cannot delete store with shift history.", "error")
         return redirect(url_for("admin_stores"))
 
     db.session.delete(store)
@@ -988,11 +1118,11 @@ def admin_close_shift():
     shift_id = request.form.get("shift_id")
     s = Shift.query.get(shift_id)
     if not s:
-        flash("Shift not found.", "danger")
+        flash("Shift not found.", "error")
         return redirect(url_for("admin_shifts"))
 
     if s.clock_out:
-        flash("Shift already closed.", "info")
+        flash("Shift already closed.", "success")
         return redirect(url_for("admin_shifts"))
 
     s.clock_out = now_utc()
@@ -1010,11 +1140,11 @@ def admin_force_close_shift():
 
     s = Shift.query.get(shift_id)
     if not s:
-        flash("Shift not found.", "danger")
+        flash("Shift not found.", "error")
         return redirect(url_for("admin_shifts"))
 
     if s.clock_out:
-        flash("Shift already closed.", "info")
+        flash("Shift already closed.", "success")
         return redirect(url_for("admin_shifts"))
 
     old_in = s.clock_in
@@ -1039,7 +1169,7 @@ def admin_force_close_shift():
     db.session.add(audit)
     db.session.commit()
 
-    flash("Shift force-closed (admin override).", "warning")
+    flash("Shift force-closed (admin override).", "success")
     return redirect(url_for("admin_shifts"))
 
 @app.route("/admin/shifts/new", methods=["GET", "POST"])
@@ -1058,22 +1188,22 @@ def admin_shift_new():
         reason = (request.form.get("reason") or "").strip()
 
         if not employee_id or not store_id:
-            flash("Employee and store are required.", "danger")
+            flash("Employee and store are required.", "error")
             return render_template("admin_shift_new.html", employees=employees, stores=stores)
 
         if not reason:
-            flash("Reason is required for manual shift creation.", "danger")
+            flash("Reason is required for manual shift creation.", "error")
             return render_template("admin_shift_new.html", employees=employees, stores=stores)
 
         cin = parse_local_datetime(clock_in_raw)
         cout = parse_local_datetime(clock_out_raw) if clock_out_raw else None
 
         if not cin:
-            flash("Clock-in is required and must be valid.", "danger")
+            flash("Clock-in is required and must be valid.", "error")
             return render_template("admin_shift_new.html", employees=employees, stores=stores)
 
         if cout and cout <= cin:
-            flash("Clock-out must be after clock-in.", "danger")
+            flash("Clock-out must be after clock-in.", "error")
             return render_template("admin_shift_new.html", employees=employees, stores=stores)
 
         s = Shift(
@@ -1114,7 +1244,7 @@ def admin_shift_edit(shift_id: int):
 
     s = Shift.query.get(shift_id)
     if not s:
-        flash("Shift not found.", "danger")
+        flash("Shift not found.", "error")
         return redirect(url_for("admin_shifts"))
 
     employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
@@ -1128,18 +1258,18 @@ def admin_shift_edit(shift_id: int):
         reason = (request.form.get("reason") or "").strip()
 
         if not reason:
-            flash("Reason is required for shift edits.", "danger")
+            flash("Reason is required for shift edits.", "error")
             return render_template("admin_shift_edit.html", s=s, employees=employees, stores=stores)
 
         cin = parse_local_datetime(clock_in_raw)
         cout = parse_local_datetime(clock_out_raw) if clock_out_raw else None
 
         if not cin:
-            flash("Clock-in must be valid.", "danger")
+            flash("Clock-in must be valid.", "error")
             return render_template("admin_shift_edit.html", s=s, employees=employees, stores=stores)
 
         if cout and cout <= cin:
-            flash("Clock-out must be after clock-in.", "danger")
+            flash("Clock-out must be after clock-in.", "error")
             return render_template("admin_shift_edit.html", s=s, employees=employees, stores=stores)
 
         old_in = s.clock_in
@@ -1201,7 +1331,7 @@ def admin_payroll():
                 start_dt = datetime.combine(start_date, dtime.min)
                 end_dt = datetime.combine(end_date, dtime.max)
         except ValueError:
-            flash("Invalid start/end date format. Use YYYY-MM-DD.", "danger")
+            flash("Invalid start/end date format. Use YYYY-MM-DD.", "error")
             start_dt, end_dt = last_completed_payroll_week()
     else:
         start_dt, end_dt = last_completed_payroll_week()
