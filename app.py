@@ -1405,7 +1405,6 @@ def admin_payroll():
             mimetype="text/csv",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
-
     return render_template(
         "payroll.html",
         start=start_dt.date().isoformat(),
@@ -1416,6 +1415,8 @@ def admin_payroll():
         grand_human=grand_human,
         grand_hours_decimal=grand_hours_decimal
     )
+
+
 # ✅ Backwards-compatible alias for old Reports link
 @app.get("/admin/reports/hours")
 def admin_reports_hours_redirect():
@@ -1426,12 +1427,14 @@ def admin_reports_hours_redirect():
     args = request.args.to_dict(flat=True)
     return redirect(url_for("admin_payroll", **args))
 
+
 # -----------------------------
 # Index
 # -----------------------------
 @app.get("/")
 def index():
     return redirect(url_for("employee_page"))
+
 
 # -----------------------------
 # Run (local only)
