@@ -126,24 +126,25 @@
       </tbody>
     </table>
 
-    {% set base_args = {
-      'start': start,
-      'end': end,
-      'employee_id': employee_id,
-      'store_id': store_id,
-      'shift_id': shift_id,
-      'inside': inside,
-      'per_page': per_page
-    } %}
-
     <div style="display:flex; justify-content:space-between; align-items:center; margin-top:12px;">
       <div style="font-size:13px; color:#6b7280;">Page {{ page }}</div>
       <div style="display:flex; gap:10px;">
         {% if has_prev %}
-          <a class="btn" href="{{ url_for('admin_pings', **base_args, page=page-1) }}">Prev</a>
+          <a class="btn" href="{{ url_for('admin_pings',
+            start=start, end=end,
+            employee_id=employee_id, store_id=store_id, shift_id=shift_id,
+            inside=inside, per_page=per_page,
+            page=page-1
+          ) }}">Prev</a>
         {% endif %}
+
         {% if has_next %}
-          <a class="btn" href="{{ url_for('admin_pings', **base_args, page=page+1) }}">Next</a>
+          <a class="btn" href="{{ url_for('admin_pings',
+            start=start, end=end,
+            employee_id=employee_id, store_id=store_id, shift_id=shift_id,
+            inside=inside, per_page=per_page,
+            page=page+1
+          ) }}">Next</a>
         {% endif %}
       </div>
     </div>
