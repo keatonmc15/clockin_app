@@ -1,37 +1,41 @@
-{% extends "base_admin.html" %}
-{% set title = "Shifts" %}
+{% extends "base.html" %}
+{% block title %}Shifts{% endblock %}
+
 {% block content %}
-
-<h2 class="mb-3">Shifts</h2>
-
-<div class="card shadow-sm">
-  <div class="card-body">
-    <div class="d-flex gap-2 mb-3">
-      <a class="btn btn-sm btn-dark" href="{{ url_for('admin_shift_new') }}">Add Shift</a>
-      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('admin_audit') }}">Audit Log</a>
+  <div class="card">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+      <div>
+        <div style="font-size:28px; font-weight:800;">Shifts</div>
+        <div style="color:#6b7280; margin-top:6px;">Recent shifts (open first, then newest).</div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center;">
+        <a class="btn btn-primary" href="{{ url_for('admin_shift_new') }}">Add Shift</a>
+        <a class="btn" href="{{ url_for('admin_audit') }}">Audit Log</a>
+      </div>
     </div>
+  </div>
 
-    <div class="table-responsive">
-      <table class="table table-sm align-middle">
-        <thead>
-          <tr>
-            <th>Status</th>
-            <th>Employee</th>
-            <th>Store</th>
-            <th>Clock In</th>
-            <th>Clock Out</th>
-            <th>Worked</th>
-            <th style="width: 320px;"></th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for s in shifts %}
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Employee</th>
+          <th>Store</th>
+          <th>Clock In</th>
+          <th>Clock Out</th>
+          <th>Worked</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in shifts %}
           <tr>
             <td>
               {% if s.clock_out %}
-                <span class="badge text-bg-secondary">Closed</span>
+                <span style="color:#6b7280; font-weight:700;">Closed</span>
               {% else %}
-                <span class="badge text-bg-success">Open</span>
+                <span style="color:#16a34a; font-weight:700;">Open</span>
               {% endif %}
             </td>
             <td>{{ s.employee.name }}</td>
@@ -45,35 +49,28 @@
                 —
               {% endif %}
             </td>
-            <td class="text-nowrap">
+            <td style="white-space:nowrap; text-align:right;">
+              <!-- View pings filtered to this shift -->
+              <a class="btn" href="{{ url_for('admin_pings', shift_id=s.id) }}">View GPS</a>
 
-              <!-- ✅ NEW: View GPS pings for this shift -->
-              <a class="btn btn-sm btn-outline-secondary me-1"
-                 href="{{ url_for('admin_shift_pings', shift_id=s.id) }}">
-                View GPS
-              </a>
-
-              <a class="btn btn-sm btn-outline-primary me-1"
-                 href="{{ url_for('admin_shift_edit', shift_id=s.id) }}">
-                Edit
-              </a>
+              <a class="btn btn-primary" href="{{ url_for('admin_shift_edit', shift_id=s.id) }}">Edit</a>
 
               {% if not s.clock_out %}
-              <form method="post" action="{{ url_for('admin_close_shift') }}" class="d-inline m-0">
-                <input type="hidden" name="shift_id" value="{{ s.id }}"/>
-                <button class="btn btn-sm btn-outline-dark" type="submit">Close Shift</button>
-              </form>
+                <form method="post" action="{{ url_for('admin_close_shift') }}" style="display:inline; margin:0;">
+                  <input type="hidden" name="shift_id" value="{{ s.id }}">
+                  <button class="btn" type="submit">Close</button>
+                </form>
               {% endif %}
             </td>
           </tr>
-          {% endfor %}
-          {% if shifts|length == 0 %}
-          <tr><td colspan="7" class="text-muted">No shifts found.</td></tr>
-          {% endif %}
-        </tbody>
-      </table>
-    </div>
-  </div>
-</div>
+        {% endfor %}
 
+        {% if shifts|length == 0 %}
+          <tr>
+            <td colspan="7" style="padding:16px; color:#6b7280;">No shifts found.</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
 {% endblock %}
