@@ -66,6 +66,15 @@
       <div style="display:flex; gap:10px; margin-top:12px; align-items:center; justify-content:space-between;">
         <div style="display:flex; gap:10px; align-items:center;">
           <button class="btn btn-primary" type="submit">Filter</button>
+
+          <!-- ✅ Quick toggle: Outside only (preserves current filters) -->
+          <a class="btn" href="{{ url_for('admin_pings',
+            start=start, end=end,
+            employee_id=employee_id, store_id=store_id, shift_id=shift_id,
+            inside='0', per_page=per_page,
+            page=1
+          ) }}">Only Outside</a>
+
           <a class="btn" href="{{ url_for('admin_pings') }}">Reset</a>
         </div>
 
@@ -93,12 +102,13 @@
           <th>Status</th>
           <th>Lat</th>
           <th>Lng</th>
+          <th>Map</th>
         </tr>
       </thead>
       <tbody>
         {% if not pings %}
           <tr>
-            <td colspan="8" style="padding:16px; color:#6b7280;">No pings found for these filters.</td>
+            <td colspan="9" style="padding:16px; color:#6b7280;">No pings found for these filters.</td>
           </tr>
         {% else %}
           {% for p in pings %}
@@ -118,8 +128,23 @@
                   <span style="color:#dc2626; font-weight:700;">OUTSIDE</span>
                 {% endif %}
               </td>
-              <td>{{ "%.6f"|format(p.lat) }}</td>
-              <td>{{ "%.6f"|format(p.lng) }}</td>
+
+              <!-- ✅ Google Maps links -->
+              <td>
+                <a href="https://www.google.com/maps?q={{ p.lat }},{{ p.lng }}" target="_blank" rel="noopener">
+                  {{ "%.6f"|format(p.lat) }}
+                </a>
+              </td>
+              <td>
+                <a href="https://www.google.com/maps?q={{ p.lat }},{{ p.lng }}" target="_blank" rel="noopener">
+                  {{ "%.6f"|format(p.lng) }}
+                </a>
+              </td>
+              <td>
+                <a class="btn" style="padding:6px 10px;" href="https://www.google.com/maps?q={{ p.lat }},{{ p.lng }}" target="_blank" rel="noopener">
+                  Map
+                </a>
+              </td>
             </tr>
           {% endfor %}
         {% endif %}
