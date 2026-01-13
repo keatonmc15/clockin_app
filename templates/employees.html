@@ -1,100 +1,160 @@
 {% extends "base.html" %}
-{% block title %}Employees{% endblock %}
-
+{% set title = "Employees" %}
 {% block content %}
-  <div class="card">
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
-      <div>
-        <div style="font-size:28px; font-weight:800;">Employees</div>
-        <div style="color:#6b7280; margin-top:6px;">Manage employee names, PINs, and active status.</div>
-      </div>
-      <div style="display:flex; gap:10px;">
-        <a class="btn" href="{{ url_for('admin_import') }}">Bulk Import</a>
-      </div>
-    </div>
-  </div>
 
-  <div class="card">
-    <div style="font-size:16px; font-weight:800; margin-bottom:10px;">Add Employee</div>
-    <form method="post" style="display:grid; grid-template-columns: 2fr 1fr 160px; gap:10px; align-items:end;">
-      <input type="hidden" name="action" value="create"/>
+<div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:12px;">
+  <h2 style="margin:0;">Employees</h2>
+</div>
 
+<div class="card">
+  <h3 style="margin-top:0;">Add Employee</h3>
+
+  <form method="post">
+    <input type="hidden" name="action" value="create"/>
+
+    <div style="display:grid; grid-template-columns: 2fr 1fr auto; gap:10px; align-items:end;">
       <div>
-        <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Name</div>
+        <label style="display:block; font-size:12px; margin-bottom:6px;">Employee name</label>
         <input name="name" placeholder="Employee name" required>
       </div>
 
       <div>
-        <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">PIN</div>
-        <input name="pin" placeholder="PIN (unique)" required>
+        <label style="display:block; font-size:12px; margin-bottom:6px;">PIN (unique)</label>
+        <input name="pin" placeholder="PIN" required>
       </div>
 
       <div>
-        <button class="btn btn-primary" type="submit" style="width:100%;">Create</button>
+        <button class="btn btn-primary" type="submit">Create</button>
       </div>
-    </form>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <h3 style="margin-top:0;">Employee List</h3>
+  <div class="muted" style="margin-bottom:10px; font-size: 13px;">
+    Status shows if an employee currently has an open shift (clocked in).
   </div>
 
-  <div class="card">
-    <div style="font-size:16px; font-weight:800;">Employee List</div>
-    <div style="color:#6b7280; margin-top:6px; font-size:13px;">
-      Tip: Edit a row and click <b>Save</b>. Delete is blocked if the employee has shift history.
-    </div>
-
-    <div style="height:12px;"></div>
-
+  <div style="overflow:auto;">
     <table>
       <thead>
         <tr>
-          <th style="min-width:260px;">Name</th>
-          <th style="min-width:140px;">PIN</th>
-          <th style="min-width:140px;">Status</th>
-          <th style="min-width:220px; text-align:right;">Actions</th>
+          <th style="min-width: 180px;">Name</th>
+          <th style="min-width: 90px;">Active</th>
+          <th style="min-width: 90px;">Status</th>
+          <th style="min-width: 180px;">Store</th>
+          <th style="min-width: 170px;">Since</th>
+          <th style="min-width: 120px;">PIN</th>
+          <th class="right" style="min-width: 260px;">Actions</th>
         </tr>
       </thead>
 
       <tbody>
         {% for e in employees %}
+          {% set open = open_by_emp.get(e.id) %}
           <tr>
-            <!-- SAVE form -->
+            <td><strong>{{ e.name }}</strong></td>
+
             <td>
-              <form method="post" action="{{ url_for('admin_employees_update') }}" id="save-emp-{{ e.id }}" style="margin:0;">
-                <input type="hidden" name="employee_id" value="{{ e.id }}">
-                <input name="name" value="{{ e.name }}" required>
+              {% if e.active %}
+                Yes
+              {% else %}
+                No
+              {% endif %}
+            </td>
+
+            <td>
+              {% if open %}
+                <span style="display:inline-block; padding:2px 8px; border-radius:999px; background:#dcfce7; border:1px solid #86efac; font-size:12px;">
+                  Clocked In
+                </span>
+              {% else %}
+                <span style="display:inline-block; padding:2px 8px; border-radius:999px; background:#f3f4f6; border:1px solid #e5e7eb; font-size:12px;">
+                  Off
+                </span>
+              {% endif %}
+            </td>
+
+            <td>
+              {% if open %}
+                {{ open.store_name }}
+              {% else %}
+                <span class="muted">—</span>
+              {% endif %}
+            </td>
+
+            <td>
+              {% if open %}
+                {{ open.clock_in }}
+              {% else %}
+                <span class="muted">—</span>
+              {% endif %}
+            </td>
+
+            <td><code>{{ e.pin }}</code></td>
+
+            <td class="right" style="display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap;">
+
+              <!-- Toggle active -->
+              <form method="post" style="display:inline;">
+                <input type="hidden" name="action" value="toggle_active"/>
+                <input type="hidden" name="employee_id" value="{{ e.id }}"/>
+                {% if e.active %}
+                  <button class="btn" type="submit">Deactivate</button>
+                {% else %}
+                  <button class="btn btn-ok" type="submit">Activate</button>
+                {% endif %}
               </form>
-            </td>
 
-            <td>
-              <input form="save-emp-{{ e.id }}" name="pin" value="{{ e.pin }}" required>
-            </td>
+              <!-- Edit (inline) -->
+              <form method="post" action="/admin/employees/update" style="display:inline; min-width: 320px;">
+                <input type="hidden" name="employee_id" value="{{ e.id }}"/>
 
-            <td>
-              <select form="save-emp-{{ e.id }}" name="active" style="padding:8px 10px; width:100%; border:1px solid #d1d5db; border-radius:8px; font-size:14px;">
-                <option value="1" {% if e.active %}selected{% endif %}>Active</option>
-                <option value="0" {% if not e.active %}selected{% endif %}>Inactive</option>
-              </select>
-            </td>
+                <div style="display:grid; grid-template-columns: 1.4fr 1fr auto; gap:8px; align-items:center;">
+                  <input name="name" value="{{ e.name }}" required>
+                  <input name="pin" value="{{ e.pin }}" required>
+                  <select name="active" style="padding:8px 10px; border:1px solid #d1d5db; border-radius:8px; font-size:14px;">
+                    <option value="1" {% if e.active %}selected{% endif %}>Active</option>
+                    <option value="0" {% if not e.active %}selected{% endif %}>Inactive</option>
+                  </select>
+                </div>
 
-            <td style="text-align:right; white-space:nowrap;">
-              <button class="btn btn-primary" type="submit" form="save-emp-{{ e.id }}">Save</button>
+                <div style="display:flex; justify-content:flex-end; margin-top:6px;">
+                  <button class="btn btn-primary" type="submit">Save</button>
+                </div>
+              </form>
 
-              <form method="post" action="{{ url_for('admin_employees_delete') }}" style="display:inline; margin:0;">
-                <input type="hidden" name="employee_id" value="{{ e.id }}">
+              <!-- Delete -->
+              <form method="post" action="/admin/employees/delete" style="display:inline;">
+                <input type="hidden" name="employee_id" value="{{ e.id }}"/>
                 <button class="btn btn-danger" type="submit"
-                        onclick="return confirm('Delete employee: {{ e.name }}? This is blocked if they have any shift history.')">
+                        onclick="return confirm('Delete employee: {{ e.name }}? This is blocked if they have shift history.')">
                   Delete
                 </button>
               </form>
+
+              <!-- OPTIONAL: Force close if clocked in -->
+              {% if open %}
+              <form method="post" action="/admin/shifts/force_close" style="display:inline; min-width: 340px;">
+                <input type="hidden" name="shift_id" value="{{ open.shift_id }}"/>
+                <div style="display:grid; grid-template-columns: 1fr auto; gap:8px; align-items:center;">
+                  <input name="reason" placeholder="Reason to force close (required)" required>
+                  <button class="btn btn-danger" type="submit">Force Close</button>
+                </div>
+              </form>
+              {% endif %}
+
             </td>
           </tr>
         {% endfor %}
 
         {% if employees|length == 0 %}
-          <tr>
-            <td colspan="4" style="padding:16px; color:#6b7280;">No employees yet.</td>
-          </tr>
+          <tr><td colspan="7" class="muted">No employees yet.</td></tr>
         {% endif %}
       </tbody>
     </table>
   </div>
+</div>
+
 {% endblock %}
