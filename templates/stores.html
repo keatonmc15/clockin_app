@@ -60,12 +60,12 @@
     <table>
       <thead>
         <tr>
-          <th style="min-width: 220px;">Name</th>
-          <th style="min-width: 170px;">Code</th>
-          <th style="min-width: 140px;">Latitude</th>
-          <th style="min-width: 140px;">Longitude</th>
-          <th style="min-width: 110px;">Radius</th>
-          <th class="right" style="min-width: 170px;">Actions</th>
+          <th style="min-width: 160px;">Name</th>
+          <th style="min-width: 140px;">Code</th>
+          <th style="min-width: 120px;">Latitude</th>
+          <th style="min-width: 120px;">Longitude</th>
+          <th style="min-width: 90px;">Radius</th>
+          <th class="right" style="min-width: 110px;">Actions</th>
         </tr>
       </thead>
 
@@ -73,7 +73,8 @@
         {% for s in stores %}
         <tr>
           <td colspan="6" style="padding:0;">
-            <form method="post" action="/admin/stores/update" style="display:grid; grid-template-columns: 220px 170px 140px 140px 110px 1fr; gap:10px; padding:10px; align-items:center;">
+            <form method="post" action="/admin/stores/update"
+                  style="display:grid; grid-template-columns: 1.6fr 1.2fr 1fr 1fr .8fr auto; gap:10px; padding:10px; align-items:center;">
               <input type="hidden" name="store_id" value="{{ s.id }}"/>
 
               <div>
@@ -96,7 +97,7 @@
                 <input name="geofence_radius_m" value="{{ s.geofence_radius_m }}" required>
               </div>
 
-              <div class="right" style="display:flex; gap:8px; justify-content:flex-end;">
+              <div class="right" style="display:flex; flex-direction:column; gap:6px; align-items:flex-end;">
                 <button class="btn btn-primary" type="submit">Save</button>
             </form>
 
