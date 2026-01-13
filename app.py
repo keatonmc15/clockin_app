@@ -976,8 +976,30 @@ def admin_employees():
                 db.session.commit()
                 flash(f"Employee {'activated' if emp.active else 'deactivated'}.", "success")
 
-    employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
-    return render_template("employees.html", employees=employees)
+    # --- View filter (tabs) ---
+    view = (request.args.get("view") or "active").strip().lower()
+
+    q = Employee.query
+    if view == "inactive":
+        q = q.filter(Employee.active.is_(False))
+    elif view == "all":
+        pass
+    else:
+        # default = active only
+        q = q.filter(Employee.active.is_(True))
+        view = "active"
+
+    employees = q.order_by(Employee.name.asc()).all()
+
+    # optional: show inactive count on the tabs
+    inactive_count = Employee.query.filter(Employee.active.is_(False)).count()
+
+    return render_template(
+        "employees.html",
+        employees=employees,
+        view=view,
+        inactive_count=inactive_count
+    )
 
 @app.post("/admin/employees/update")
 def admin_employees_update():
