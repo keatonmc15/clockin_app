@@ -2,113 +2,156 @@
 {% set title = "Stores" %}
 {% block content %}
 
-<h2 class="mb-3">Stores</h2>
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h2 class="m-0">Stores</h2>
+  <a class="btn btn-sm btn-outline-secondary" href="/admin/import">Bulk Import</a>
+</div>
 
 <div class="card shadow-sm mb-4">
   <div class="card-body">
-    <div class="d-flex align-items-center justify-content-between">
-      <h5 class="mb-3">Add Store</h5>
-      <a class="btn btn-outline-secondary btn-sm" href="/admin/import">Bulk Import</a>
-    </div>
+    <h5 class="mb-3">Add Store</h5>
 
     <form method="post" class="row g-2">
       <input type="hidden" name="action" value="create"/>
-      <div class="col-md-3">
+
+      <div class="col-md-4">
         <input class="form-control" name="name" placeholder="Store name" required>
       </div>
+
       <div class="col-md-3">
-        <input class="form-control" name="qr_token" placeholder="Store code (unique)" required>
+        <input class="form-control font-monospace" name="qr_token" placeholder="Store code (unique)" required>
       </div>
+
       <div class="col-md-2">
         <input class="form-control" name="latitude" placeholder="Latitude" required>
       </div>
+
       <div class="col-md-2">
         <input class="form-control" name="longitude" placeholder="Longitude" required>
       </div>
+
       <div class="col-md-1">
         <input class="form-control" name="geofence_radius_m" placeholder="m" value="150">
       </div>
-      <div class="col-md-1">
-        <button class="btn btn-dark w-100" type="submit">Add</button>
+
+      <div class="col-12 d-flex justify-content-end mt-2">
+        <button class="btn btn-dark" type="submit">Create</button>
       </div>
     </form>
 
     <div class="text-muted mt-2" style="font-size: 0.9rem;">
-      Radius is in meters. Typical: 150–250m. Store code is case-insensitive.
+      Radius is in meters (typical: 150–250m). Store code is case-insensitive.
     </div>
   </div>
 </div>
 
 <div class="card shadow-sm">
   <div class="card-body">
-    <h5 class="mb-2">Store List</h5>
-    <div class="text-muted mb-3" style="font-size: 0.9rem;">
-      Tip: You can edit inline and click <strong>Save</strong>. Delete is blocked if the store has shift history.
+    <div class="d-flex align-items-center justify-content-between mb-2">
+      <h5 class="m-0">Store List</h5>
+      <div class="text-muted" style="font-size: 0.9rem;">
+        Click <strong>Edit</strong> to update a store.
+      </div>
     </div>
 
     <div class="table-responsive">
       <table class="table table-sm align-middle">
         <thead>
           <tr>
-            <th style="min-width: 220px;">Name</th>
-            <th style="min-width: 190px;">Store Code</th>
-            <th style="min-width: 150px;">Latitude</th>
-            <th style="min-width: 150px;">Longitude</th>
-            <th style="min-width: 110px;">Radius (m)</th>
-            <th style="min-width: 160px;" class="text-end">Actions</th>
+            <th>Name</th>
+            <th>Code</th>
+            <th>Latitude</th>
+            <th>Longitude</th>
+            <th>Radius (m)</th>
+            <th class="text-end">Actions</th>
           </tr>
         </thead>
+
         <tbody>
           {% for s in stores %}
+
+          <!-- Display row -->
           <tr>
-            <form method="post" action="/admin/stores/update" class="row g-0">
-              <input type="hidden" name="store_id" value="{{ s.id }}"/>
+            <td><strong>{{ s.name }}</strong></td>
+            <td class="font-monospace">{{ s.qr_token }}</td>
+            <td>{{ "%.8f"|format(s.latitude) }}</td>
+            <td>{{ "%.8f"|format(s.longitude) }}</td>
+            <td>{{ s.geofence_radius_m }}</td>
+            <td class="text-end">
+              <button class="btn btn-sm btn-outline-dark" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#editStore{{ s.id }}">
+                Edit
+              </button>
 
-              <td>
-                <input class="form-control form-control-sm" name="name" value="{{ s.name }}" required>
-              </td>
-
-              <td>
-                <input class="form-control form-control-sm font-monospace" name="qr_token" value="{{ s.qr_token }}" required>
-              </td>
-
-              <td>
-                <input class="form-control form-control-sm" name="latitude" value="{{ "%.8f"|format(s.latitude) }}" required>
-              </td>
-
-              <td>
-                <input class="form-control form-control-sm" name="longitude" value="{{ "%.8f"|format(s.longitude) }}" required>
-              </td>
-
-              <td>
-                <input class="form-control form-control-sm" name="geofence_radius_m" value="{{ s.geofence_radius_m }}" required>
-              </td>
-
-              <td class="text-end">
-                <button class="btn btn-sm btn-dark" type="submit">Save</button>
-            </form>
-
-                <form method="post" action="/admin/stores/delete" class="d-inline">
-                  <input type="hidden" name="store_id" value="{{ s.id }}"/>
-                  <button
-                    class="btn btn-sm btn-outline-danger"
-                    type="submit"
-                    onclick="return confirm('Delete store: {{ s.name }}? This is blocked if the store has any shift history.')"
-                  >
-                    Delete
-                  </button>
-                </form>
-              </td>
+              <form method="post" action="/admin/stores/delete" class="d-inline">
+                <input type="hidden" name="store_id" value="{{ s.id }}"/>
+                <button
+                  class="btn btn-sm btn-outline-danger"
+                  type="submit"
+                  onclick="return confirm('Delete store: {{ s.name }}? This is blocked if the store has any shift history.')"
+                >
+                  Delete
+                </button>
+              </form>
+            </td>
           </tr>
+
+          <!-- Collapsible edit row -->
+          <tr class="collapse" id="editStore{{ s.id }}">
+            <td colspan="6">
+              <div class="border rounded p-3 bg-light">
+                <form method="post" action="/admin/stores/update" class="row g-2">
+                  <input type="hidden" name="store_id" value="{{ s.id }}"/>
+
+                  <div class="col-md-4">
+                    <label class="form-label small mb-1">Name</label>
+                    <input class="form-control form-control-sm" name="name" value="{{ s.name }}" required>
+                  </div>
+
+                  <div class="col-md-3">
+                    <label class="form-label small mb-1">Store Code</label>
+                    <input class="form-control form-control-sm font-monospace" name="qr_token" value="{{ s.qr_token }}" required>
+                  </div>
+
+                  <div class="col-md-2">
+                    <label class="form-label small mb-1">Latitude</label>
+                    <input class="form-control form-control-sm" name="latitude" value="{{ "%.8f"|format(s.latitude) }}" required>
+                  </div>
+
+                  <div class="col-md-2">
+                    <label class="form-label small mb-1">Longitude</label>
+                    <input class="form-control form-control-sm" name="longitude" value="{{ "%.8f"|format(s.longitude) }}" required>
+                  </div>
+
+                  <div class="col-md-1">
+                    <label class="form-label small mb-1">Radius</label>
+                    <input class="form-control form-control-sm" name="geofence_radius_m" value="{{ s.geofence_radius_m }}" required>
+                  </div>
+
+                  <div class="col-12 d-flex justify-content-end gap-2 mt-2">
+                    <button class="btn btn-sm btn-dark" type="submit">Save</button>
+                    <button class="btn btn-sm btn-outline-secondary" type="button"
+                            data-bs-toggle="collapse" data-bs-target="#editStore{{ s.id }}">
+                      Cancel
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </td>
+          </tr>
+
           {% endfor %}
 
           {% if stores|length == 0 %}
-          <tr><td colspan="6" class="text-muted">No stores yet.</td></tr>
+            <tr><td colspan="6" class="text-muted">No stores yet.</td></tr>
           {% endif %}
         </tbody>
       </table>
     </div>
   </div>
 </div>
+
+<!-- Bootstrap JS (needed for collapse) -->
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 
 {% endblock %}
