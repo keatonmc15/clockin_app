@@ -976,33 +976,8 @@ def admin_employees():
                 db.session.commit()
                 flash(f"Employee {'activated' if emp.active else 'deactivated'}.", "success")
 
-    # ---- Employees list ----
     employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
-
-    # ---- Open shift lookup (who is clocked in right now) ----
-    # open_by_emp[employee_id] = {
-    #   shift_id, store_name, clock_in_display, clock_in_raw
-    # }
-    open_by_emp = {}
-
-    open_shifts = (
-        Shift.query
-        .filter(Shift.clock_out.is_(None))
-        .order_by(Shift.clock_in.desc())
-        .all()
-    )
-
-    for s in open_shifts:
-        # Keep only the most recent open shift per employee (should normally be just 1)
-        if s.employee_id not in open_by_emp:
-            open_by_emp[s.employee_id] = {
-                "shift_id": s.id,
-                "store_name": s.store.name if s.store else "",
-                "clock_in": fmt_dt(s.clock_in),
-                "clock_in_raw": s.clock_in,
-            }
-
-    return render_template("employees.html", employees=employees, open_by_emp=open_by_emp)
+    return render_template("employees.html", employees=employees)
 
 @app.post("/admin/employees/update")
 def admin_employees_update():
