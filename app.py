@@ -2,6 +2,7 @@ import os
 import math
 import logging
 import csv
+import json
 from io import TextIOWrapper
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, time as dtime
@@ -60,6 +61,10 @@ if db_url.startswith("postgresql://"):
 
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
+
+# ✅ Mobile ingest auth token (set on Render)
+# Render -> Environment -> MOBILE_DEVICE_TOKEN=some-long-random-string
+app.config["MOBILE_DEVICE_TOKEN"] = (os.environ.get("MOBILE_DEVICE_TOKEN") or "").strip()
 
 db = SQLAlchemy(app)
 
@@ -204,6 +209,35 @@ class ShiftEditAudit(db.Model):
     shift = db.relationship("Shift")
 
 
+# ✅ Mobile ingest raw event store (Option B-safe: new table)
+class MobileEvent(db.Model):
+    """
+    Stores raw Transistorsoft Background Geolocation events for audit/debug.
+    Keep this table light: extract only a few useful fields for filtering,
+    and keep the full payload in raw_json.
+    """
+    __tablename__ = "mobile_events"
+    id = db.Column(db.Integer, primary_key=True)
+
+    event_type = db.Column(db.String(50), nullable=False, default="unknown")
+    device_uuid = db.Column(db.String(120), nullable=True)
+    is_moving = db.Column(db.Boolean, nullable=True)
+
+    # Optional normalized coords when present
+    lat = db.Column(db.Float, nullable=True)
+    lng = db.Column(db.Float, nullable=True)
+    accuracy = db.Column(db.Float, nullable=True)
+
+    # When the event occurred (from payload timestamp if present)
+    event_at = db.Column(db.DateTime, nullable=True)
+
+    # When server received it
+    received_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
+
+    # Raw payload as JSON string
+    raw_json = db.Column(db.Text, nullable=False)
+
+
 # -----------------------------
 # Helpers (general)
 # -----------------------------
@@ -251,7 +285,7 @@ def haversine_m(lat1, lon1, lat2, lon2) -> float:
     dphi = math.radians(lat2 - lat1)
     dl = math.radians(lon2 - lon1)
 
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dl / 2) ** 2
+    a = math.sin(dphi / 2) ** 2 + math.cos(phi1 * 1.0) * math.cos(phi2 * 1.0) * math.sin(dl / 2) ** 2
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
@@ -335,6 +369,72 @@ def log_event(event: str, **fields):
     parts = [f"{k}={fields[k]}" for k in sorted(fields.keys())]
     app.logger.info("%s %s", event, " ".join(parts))
 
+# -----------------------------
+# Mobile ingest helpers
+# -----------------------------
+def _get_device_token() -> str:
+    token = (request.headers.get("X-Device-Token") or "").strip()
+    if token:
+        return token
+
+    auth = (request.headers.get("Authorization") or "").strip()
+    if auth.lower().startswith("bearer "):
+        return auth[7:].strip()
+
+    return ""
+
+def _require_mobile_auth():
+    expected = (app.config.get("MOBILE_DEVICE_TOKEN") or "").strip()
+    provided = _get_device_token()
+
+    if not expected:
+        # Fail closed: don't allow anonymous ingest if you forgot to set env var on Render
+        app.logger.error("MOBILE_DEVICE_TOKEN is not set on the server.")
+        return False, ("server_not_configured", 500)
+
+    if not provided or provided != expected:
+        return False, ("unauthorized", 401)
+
+    return True, None
+
+def _safe_json_dumps(obj) -> str:
+    try:
+        return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
+    except Exception:
+        return json.dumps({"_error": "json_dumps_failed"}, separators=(",", ":"))
+
+def _extract_location_coords(payload: dict) -> tuple[dict, dict]:
+    """
+    Returns (location_dict, coords_dict). Either may be empty.
+    BG sometimes sends:
+      - { event: 'location', location: { coords: {...}, timestamp: ms, ... } }
+      - { name/type/event: ..., params/data: { location: {...} } }
+    """
+    loc = {}
+    if isinstance(payload.get("location"), dict):
+        loc = payload.get("location") or {}
+    elif isinstance(payload.get("params"), dict) and isinstance((payload.get("params") or {}).get("location"), dict):
+        loc = (payload.get("params") or {}).get("location") or {}
+    elif isinstance(payload.get("data"), dict) and isinstance((payload.get("data") or {}).get("location"), dict):
+        loc = (payload.get("data") or {}).get("location") or {}
+
+    coords = (loc.get("coords") or {}) if isinstance(loc, dict) else {}
+    if not isinstance(coords, dict):
+        coords = {}
+    return loc, coords
+
+def _extract_event_at(payload: dict, loc: dict | None) -> datetime | None:
+    ts_ms = payload.get("timestamp")
+    if ts_ms is None and isinstance(loc, dict):
+        ts_ms = loc.get("timestamp")
+
+    if isinstance(ts_ms, (int, float)) and ts_ms > 0:
+        try:
+            return datetime.utcfromtimestamp(ts_ms / 1000.0)
+        except Exception:
+            return None
+    return None
+
 # Make helpers available in templates
 @app.context_processor
 def inject_helpers():
@@ -397,6 +497,123 @@ def api_stores_suggest():
     )
 
     return jsonify([{"code": s.qr_token, "name": s.name} for s in matches])
+
+# -----------------------------
+# ✅ Mobile event ingest (Transistorsoft BG Geolocation)
+# -----------------------------
+@app.post("/api/mobile/bg/event")
+def api_mobile_bg_event():
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_json"}), 400
+
+    event_type = (payload.get("event") or payload.get("name") or payload.get("type") or "unknown")
+    event_type = str(event_type).strip().lower() or "unknown"
+
+    loc, coords = _extract_location_coords(payload)
+
+    device_uuid = payload.get("uuid")
+    if not device_uuid and isinstance(payload.get("device"), dict):
+        device_uuid = (payload.get("device") or {}).get("uuid")
+    if device_uuid is not None:
+        device_uuid = str(device_uuid)
+
+    is_moving = payload.get("is_moving")
+    if is_moving is None and isinstance(loc, dict):
+        is_moving = loc.get("is_moving")
+
+    lat = coords.get("latitude")
+    lng = coords.get("longitude")
+    accuracy = coords.get("accuracy")
+
+    # event_at (UTC naive) from timestamp ms if present
+    event_at = _extract_event_at(payload, loc)
+
+    try:
+        evt = MobileEvent(
+            event_type=event_type,
+            device_uuid=device_uuid,
+            is_moving=bool(is_moving) if isinstance(is_moving, bool) else None,
+            lat=float(lat) if isinstance(lat, (int, float)) else None,
+            lng=float(lng) if isinstance(lng, (int, float)) else None,
+            accuracy=float(accuracy) if isinstance(accuracy, (int, float)) else None,
+            event_at=event_at,
+            received_at=now_utc(),
+            raw_json=_safe_json_dumps(payload),
+        )
+        db.session.add(evt)
+        db.session.commit()
+    except Exception:
+        app.logger.exception("MOBILE_BG_EVENT_SAVE_FAILED")
+        return jsonify({"ok": False, "error": "db_error"}), 500
+
+    # Minimal response (fast)
+    return jsonify({"ok": True, "id": evt.id})
+
+@app.post("/api/mobile/bg/locations")
+def api_mobile_bg_locations_bulk():
+    """
+    Optional bulk endpoint if you configure BG to POST arrays of locations.
+    Expected payload:
+      { "locations": [ {coords:{...}, timestamp:ms, ...}, ... ], "uuid": "..." }
+    """
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload, dict):
+        return jsonify({"ok": False, "error": "invalid_json"}), 400
+
+    locations = payload.get("locations")
+    if not isinstance(locations, list):
+        return jsonify({"ok": False, "error": "expected_locations_array"}), 400
+
+    device_uuid = payload.get("uuid")
+    if device_uuid is not None:
+        device_uuid = str(device_uuid)
+
+    saved = 0
+    try:
+        for item in locations:
+            if not isinstance(item, dict):
+                continue
+
+            coords = item.get("coords") if isinstance(item.get("coords"), dict) else {}
+            ts_ms = item.get("timestamp")
+            event_at = None
+            if isinstance(ts_ms, (int, float)) and ts_ms > 0:
+                try:
+                    event_at = datetime.utcfromtimestamp(ts_ms / 1000.0)
+                except Exception:
+                    event_at = None
+
+            evt = MobileEvent(
+                event_type="location",
+                device_uuid=str(item.get("uuid") or device_uuid) if (item.get("uuid") or device_uuid) else None,
+                is_moving=bool(item.get("is_moving")) if isinstance(item.get("is_moving"), bool) else None,
+                lat=float(coords.get("latitude")) if isinstance(coords.get("latitude"), (int, float)) else None,
+                lng=float(coords.get("longitude")) if isinstance(coords.get("longitude"), (int, float)) else None,
+                accuracy=float(coords.get("accuracy")) if isinstance(coords.get("accuracy"), (int, float)) else None,
+                event_at=event_at,
+                received_at=now_utc(),
+                raw_json=_safe_json_dumps(item),
+            )
+            db.session.add(evt)
+            saved += 1
+
+        db.session.commit()
+    except Exception:
+        app.logger.exception("MOBILE_BG_LOCATIONS_SAVE_FAILED")
+        return jsonify({"ok": False, "error": "db_error"}), 500
+
+    return jsonify({"ok": True, "saved": saved})
 
 # -----------------------------
 # Employee Clock Page
