@@ -3,16 +3,55 @@
 
 {% block content %}
   <div class="card">
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px;">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
       <div>
         <div style="font-size:28px; font-weight:800;">Shifts</div>
-        <div style="color:#6b7280; margin-top:6px;">Recent shifts (open first, then newest).</div>
+        <div style="color:#6b7280; margin-top:6px;">
+          Shifts for selected range (open first, then newest). Default is last completed Mon–Sun.
+        </div>
       </div>
-      <div style="display:flex; gap:10px; align-items:center;">
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
         <a class="btn btn-primary" href="{{ url_for('admin_shift_new') }}">Add Shift</a>
         <a class="btn" href="{{ url_for('admin_audit') }}">Audit Log</a>
       </div>
     </div>
+  </div>
+
+  <!-- Date range filter -->
+  <div class="card">
+    <form method="get" action="{{ url_for('admin_shifts') }}">
+      <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+        <div style="min-width:160px;">
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Start</div>
+          <input type="date" name="start" value="{{ start }}">
+        </div>
+
+        <div style="min-width:160px;">
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">End</div>
+          <input type="date" name="end" value="{{ end }}">
+        </div>
+
+        <div style="min-width:140px;">
+          <button class="btn btn-primary" type="submit" style="width:100%;">View</button>
+        </div>
+
+        <div style="color:#6b7280; font-size:13px; padding-bottom:4px;">
+          {% if total_in_view is not none %}
+            Showing <b>{{ total_in_view }}</b>
+          {% endif %}
+        </div>
+
+        <div style="margin-left:auto; display:flex; gap:8px; flex-wrap:wrap;">
+          <input type="hidden" name="per_page" value="{{ per_page if per_page is defined else 200 }}">
+          {% if has_prev %}
+            <a class="btn" href="{{ url_for('admin_shifts', start=start, end=end, page=page-1, per_page=per_page) }}">Prev</a>
+          {% endif %}
+          {% if has_next %}
+            <a class="btn" href="{{ url_for('admin_shifts', start=start, end=end, page=page+1, per_page=per_page) }}">Next</a>
+          {% endif %}
+        </div>
+      </div>
+    </form>
   </div>
 
   <div class="card">
