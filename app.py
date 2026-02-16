@@ -13,7 +13,7 @@ from flask import (
 )
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
-from sqlalchemy import func
+from sqlalchemy import func, text
 
 # ✅ XLSX export support
 from openpyxl import Workbook
@@ -137,6 +137,11 @@ class Employee(db.Model):
     pin = db.Column(db.String(20), nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
 
+    # ✅ Option 2: device binding (Option C = overwrite allowed)
+    device_uuid = db.Column(db.String(120), nullable=True)        # last seen/bound device
+    device_label = db.Column(db.String(120), nullable=True)       # optional "Pixel 7", etc
+    device_last_seen_at = db.Column(db.DateTime, nullable=True)   # UTC naive
+
     created_at = db.Column(db.DateTime, default=lambda: now_utc())
 
 
@@ -154,6 +159,10 @@ class Shift(db.Model):
     clock_in_lng = db.Column(db.Float, nullable=True)
     clock_out_lat = db.Column(db.Float, nullable=True)
     clock_out_lng = db.Column(db.Float, nullable=True)
+
+    # ✅ Option 2: capture device uuid on punches (enables "one active employee per device" rule)
+    clock_in_device_uuid = db.Column(db.String(120), nullable=True)
+    clock_out_device_uuid = db.Column(db.String(120), nullable=True)
 
     # --- Admin override audit fields (B) ---
     closed_by_admin = db.Column(db.Boolean, nullable=False, default=False)
@@ -435,6 +444,50 @@ def _extract_event_at(payload: dict, loc: dict | None) -> datetime | None:
             return None
     return None
 
+def _coerce_str(val, max_len: int = 120) -> str | None:
+    if val is None:
+        return None
+    try:
+        s = str(val).strip()
+    except Exception:
+        return None
+    if not s:
+        return None
+    return s[:max_len]
+
+def _touch_employee_device(emp: "Employee", device_uuid: str | None, device_label: str | None):
+    """
+    Option C behavior: if device_uuid provided, overwrite employee.device_uuid.
+    Never blocks clock-ins. Used by /api/clockin, /api/clockout, /api/ping, /api/mobile/me
+    """
+    if not device_uuid:
+        return
+    try:
+        emp.device_uuid = device_uuid
+        if device_label:
+            emp.device_label = device_label
+        emp.device_last_seen_at = now_utc()
+    except Exception:
+        pass
+
+def _device_has_other_open_shift(device_uuid: str, employee_id: int) -> "Shift | None":
+    """
+    Prevent the obvious abuse: one phone can't have an open shift for Employee A
+    while Employee B tries to clock in on same device.
+    """
+    if not device_uuid:
+        return None
+    return (
+        Shift.query
+        .filter(
+            Shift.clock_out.is_(None),
+            Shift.clock_in_device_uuid == device_uuid,
+            Shift.employee_id != employee_id
+        )
+        .order_by(Shift.clock_in.desc())
+        .first()
+    )
+
 # Make helpers available in templates
 @app.context_processor
 def inject_helpers():
@@ -447,6 +500,51 @@ def inject_helpers():
     )
 
 # -----------------------------
+# ✅ Option B-safe: add missing columns without migrations
+# -----------------------------
+def _ensure_column(table_name: str, column_name: str, sql_type: str):
+    """
+    Best-effort: add a column if it doesn't exist.
+    Works for SQLite and Postgres for simple ADD COLUMN cases.
+    """
+    try:
+        bind = db.engine
+        dialect = bind.dialect.name
+
+        exists = False
+
+        if dialect == "postgresql":
+            q = text("""
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_name = :t AND column_name = :c
+                LIMIT 1
+            """)
+            row = db.session.execute(q, {"t": table_name, "c": column_name}).first()
+            exists = bool(row)
+
+        elif dialect == "sqlite":
+            q = text(f"PRAGMA table_info({table_name})")
+            rows = db.session.execute(q).fetchall()
+            exists = any((r[1] == column_name) for r in rows)  # r[1] = name
+
+        else:
+            # Unknown dialect; just try ALTER and ignore failures
+            exists = False
+
+        if exists:
+            return
+
+        db.session.execute(text(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {sql_type}"))
+        db.session.commit()
+        app.logger.info("Added missing column %s.%s", table_name, column_name)
+
+    except Exception:
+        db.session.rollback()
+        # Don't crash boot if column add fails
+        app.logger.exception("Could not ensure column %s.%s", table_name, column_name)
+
+# -----------------------------
 # Create tables on startup (Option B)
 # -----------------------------
 with app.app_context():
@@ -456,12 +554,20 @@ with app.app_context():
     except Exception as e:
         app.logger.exception("DB create_all failed: %s", e)
 
+    # Ensure new Option 2 columns exist (no migrations needed)
+    _ensure_column("employees", "device_uuid", "VARCHAR(120)")
+    _ensure_column("employees", "device_label", "VARCHAR(120)")
+    _ensure_column("employees", "device_last_seen_at", "TIMESTAMP")
+
+    _ensure_column("shifts", "clock_in_device_uuid", "VARCHAR(120)")
+    _ensure_column("shifts", "clock_out_device_uuid", "VARCHAR(120)")
+
 # -----------------------------
 # Fingerprint (DEBUG)
 # -----------------------------
 @app.get("/__fingerprint__")
 def fingerprint():
-    return "clockin_app LIVE fingerprint 2026-01-08"
+    return "clockin_app LIVE fingerprint 2026-02-16"
 
 # -----------------------------
 # Optional: favicon
@@ -497,6 +603,97 @@ def api_stores_suggest():
     )
 
     return jsonify([{"code": s.qr_token, "name": s.name} for s in matches])
+
+# -----------------------------
+# ✅ Mobile identity + geofence endpoints (Option 2)
+# -----------------------------
+@app.post("/api/mobile/me")
+def api_mobile_me():
+    """
+    Option C: PIN always works. Device UUID is accepted and stored as "last seen".
+    Body: { pin, device_uuid?, device_label? }
+    """
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+    pin = (data.get("pin") or "").strip()
+    device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
+    device_label = _coerce_str(data.get("device_label"))
+
+    if not pin:
+        return jsonify({"ok": False, "error": "missing_pin"}), 400
+
+    emp = Employee.query.filter_by(pin=pin).first()
+    if not emp or not emp.active:
+        return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
+
+    _touch_employee_device(emp, device_uuid, device_label)
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "employee": {
+            "id": emp.id,
+            "name": emp.name,
+            "active": bool(emp.active),
+            "device_uuid": emp.device_uuid,
+            "device_label": emp.device_label,
+            "device_last_seen_at": fmt_dt(emp.device_last_seen_at) if emp.device_last_seen_at else ""
+        },
+        "server_time_utc": now_utc().isoformat() + "Z"
+    })
+
+@app.post("/api/mobile/geofences")
+def api_mobile_geofences():
+    """
+    Returns the *real* store geofence based on store_code.
+    Body: { pin, qr_token, device_uuid? }  (pin is required; device_uuid stored for last-seen)
+    """
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+
+    pin = (data.get("pin") or "").strip()
+    qr_token_raw = (data.get("qr_token") or "").strip()
+    qr_token = normalize_store_code(qr_token_raw)
+
+    device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
+    device_label = _coerce_str(data.get("device_label"))
+
+    if not pin or not qr_token:
+        return jsonify({"ok": False, "error": "missing_pin_or_store_code"}), 400
+
+    emp = Employee.query.filter_by(pin=pin).first()
+    if not emp or not emp.active:
+        return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
+
+    store = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
+    if not store:
+        return jsonify({"ok": False, "error": "invalid_store_code"}), 404
+
+    _touch_employee_device(emp, device_uuid, device_label)
+    db.session.commit()
+
+    geofences = [{
+        "identifier": f"store_{store.id}",
+        "latitude": float(store.latitude),
+        "longitude": float(store.longitude),
+        "radius": int(store.geofence_radius_m),
+        "notifyOnEntry": True,
+        "notifyOnExit": True
+    }]
+
+    return jsonify({
+        "ok": True,
+        "store": {"id": store.id, "name": store.name, "code": store.qr_token, "radius_m": store.geofence_radius_m},
+        "geofences": geofences
+    })
 
 # -----------------------------
 # ✅ Mobile event ingest (Transistorsoft BG Geolocation)
@@ -637,6 +834,10 @@ def api_clockin():
     lat = data.get("lat")
     lng = data.get("lng")
 
+    # ✅ Option 2 fields from mobile
+    device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
+    device_label = _coerce_str(data.get("device_label"))
+
     if not pin or not qr_token:
         return jsonify({"error": "Missing PIN or store code."}), 400
 
@@ -653,6 +854,19 @@ def api_clockin():
     if open_shift:
         log_event("CLOCKIN_DENY_ALREADY_CLOCKED_IN", employee_id=emp.id, open_shift_id=open_shift.id)
         return jsonify({"error": "You are already clocked in. Please clock out first."}), 409
+
+    # ✅ Device guardrail: one active employee per device (only if device_uuid provided)
+    if device_uuid:
+        other = _device_has_other_open_shift(device_uuid, emp.id)
+        if other:
+            log_event(
+                "CLOCKIN_DENY_DEVICE_IN_USE",
+                device_uuid=device_uuid,
+                employee_id=emp.id,
+                other_employee_id=other.employee_id,
+                other_shift_id=other.id
+            )
+            return jsonify({"error": "This phone is currently being used for another active shift. Use your own phone or have a manager help."}), 409
 
     if lat is None or lng is None:
         log_event("CLOCKIN_DENY_LOCATION_REQUIRED", employee_id=emp.id, store_id=store.id)
@@ -676,6 +890,7 @@ def api_clockin():
         store_code=store.qr_token,
         dist_m=round(dist_m, 1),
         radius_m=store.geofence_radius_m,
+        device_uuid=device_uuid or ""
     )
 
     if dist_m > store.geofence_radius_m:
@@ -685,8 +900,12 @@ def api_clockin():
             store_id=store.id,
             dist_m=round(dist_m, 1),
             radius_m=store.geofence_radius_m,
+            device_uuid=device_uuid or ""
         )
         return jsonify({"error": "You are not at the store location."}), 403
+
+    # ✅ Option C: overwrite employee device binding if device_uuid present
+    _touch_employee_device(emp, device_uuid, device_label)
 
     s = Shift(
         employee_id=emp.id,
@@ -694,6 +913,7 @@ def api_clockin():
         clock_in=now_utc(),  # ✅ store UTC
         clock_in_lat=lat,
         clock_in_lng=lng,
+        clock_in_device_uuid=device_uuid,
         closed_by_admin=False,
         admin_closed_by=None,
         admin_closed_at=None,
@@ -702,7 +922,7 @@ def api_clockin():
     db.session.add(s)
     db.session.commit()
 
-    log_event("CLOCKIN_OK", employee_id=emp.id, shift_id=s.id, store_id=store.id)
+    log_event("CLOCKIN_OK", employee_id=emp.id, shift_id=s.id, store_id=store.id, device_uuid=device_uuid or "")
 
     return jsonify({
         "ok": True,
@@ -718,6 +938,9 @@ def api_clockout():
     pin = (data.get("pin") or "").strip()
     lat = data.get("lat")
     lng = data.get("lng")
+
+    device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
+    device_label = _coerce_str(data.get("device_label"))
 
     if not pin:
         return jsonify({"error": "Missing PIN."}), 400
@@ -755,6 +978,7 @@ def api_clockout():
         store_code=store.qr_token,
         dist_m=round(dist_m, 1),
         radius_m=store.geofence_radius_m,
+        device_uuid=device_uuid or ""
     )
 
     if dist_m > store.geofence_radius_m:
@@ -765,16 +989,21 @@ def api_clockout():
             store_id=store.id,
             dist_m=round(dist_m, 1),
             radius_m=store.geofence_radius_m,
+            device_uuid=device_uuid or ""
         )
         return jsonify({"error": "You are not at the store location."}), 403
+
+    # ✅ Option C: overwrite device binding if present
+    _touch_employee_device(emp, device_uuid, device_label)
 
     open_shift.clock_out = now_utc()  # ✅ store UTC
     open_shift.clock_out_lat = lat
     open_shift.clock_out_lng = lng
+    open_shift.clock_out_device_uuid = device_uuid
     db.session.commit()
 
     mins = shift_minutes(open_shift)
-    log_event("CLOCKOUT_OK", employee_id=emp.id, shift_id=open_shift.id, minutes=mins)
+    log_event("CLOCKOUT_OK", employee_id=emp.id, shift_id=open_shift.id, minutes=mins, device_uuid=device_uuid or "")
 
     return jsonify({
         "ok": True,
@@ -794,6 +1023,9 @@ def api_ping():
     pin = (data.get("pin") or "").strip()
     lat = (data.get("lat"))
     lng = (data.get("lng"))
+
+    device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
+    device_label = _coerce_str(data.get("device_label"))
 
     if not pin:
         return jsonify({"error": "Missing PIN."}), 400
@@ -819,6 +1051,9 @@ def api_ping():
     dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
     inside = dist_m <= store.geofence_radius_m
 
+    # ✅ Option C: update last-seen device
+    _touch_employee_device(emp, device_uuid, device_label)
+
     ping = LocationPing(
         employee_id=emp.id,
         shift_id=open_shift.id,
@@ -838,7 +1073,8 @@ def api_ping():
         shift_id=open_shift.id,
         store_id=store.id,
         dist_m=round(dist_m, 1),
-        inside=inside
+        inside=inside,
+        device_uuid=device_uuid or ""
     )
 
     return jsonify({
@@ -1627,6 +1863,9 @@ def admin_audit():
     audits = ShiftEditAudit.query.order_by(ShiftEditAudit.created_at.desc()).limit(500).all()
     return render_template("admin_audit.html", audits=audits)
 
+# -----------------------------
+# ✅ Payroll (unchanged)
+# -----------------------------
 @app.get("/admin/payroll")
 def admin_payroll():
     guard = admin_guard()
@@ -1906,7 +2145,6 @@ def admin_payroll():
         grand_hours_decimal=grand_hours_decimal
     )
 
-
 # ✅ Backwards-compatible alias for old Reports link
 @app.get("/admin/reports/hours")
 def admin_reports_hours_redirect():
@@ -1917,14 +2155,12 @@ def admin_reports_hours_redirect():
     args = request.args.to_dict(flat=True)
     return redirect(url_for("admin_payroll", **args))
 
-
 # -----------------------------
 # Index
 # -----------------------------
 @app.get("/")
 def index():
     return redirect(url_for("employee_page"))
-
 
 # -----------------------------
 # Run (local only)
