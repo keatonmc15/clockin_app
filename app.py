@@ -917,6 +917,66 @@ def api_mobile_me():
         "server_time_utc": now_utc().isoformat() + "Z"
     })
 
+@app.post("/api/mobile/status")
+def api_mobile_status():
+    """
+    Returns employee identity + current open shift (if any).
+    Body: { pin, device_uuid?, device_label? }
+    """
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+    pin = (data.get("pin") or "").strip()
+    device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
+    device_label = _coerce_str(data.get("device_label"))
+
+    if not pin:
+        return jsonify({"ok": False, "error": "missing_pin"}), 400
+
+    emp = Employee.query.filter_by(pin=pin).first()
+    if not emp or not emp.active:
+        return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
+
+    _touch_employee_device(emp, device_uuid, device_label)
+
+    open_shift = (
+        Shift.query
+        .filter(Shift.employee_id == emp.id, Shift.clock_out.is_(None))
+        .order_by(Shift.clock_in.desc())
+        .first()
+    )
+
+    payload = {
+        "ok": True,
+        "employee": {
+            "id": emp.id,
+            "name": emp.name,
+            "active": bool(emp.active),
+            "device_uuid": emp.device_uuid,
+            "device_label": emp.device_label,
+            "device_last_seen_at": fmt_dt(emp.device_last_seen_at) if emp.device_last_seen_at else "",
+        },
+        "server_time_utc": now_utc().isoformat() + "Z",
+        "open_shift": None,
+    }
+
+    if open_shift:
+        store = Store.query.get(open_shift.store_id)
+        payload["open_shift"] = {
+            "shift_id": open_shift.id,
+            "store_id": open_shift.store_id,
+            "store_name": store.name if store else "",
+            "clock_in_utc": open_shift.clock_in.isoformat() + "Z",
+            "clock_in_local": fmt_dt(open_shift.clock_in),
+            "closed_by_admin": bool(open_shift.closed_by_admin),
+        }
+
+    db.session.commit()
+    return jsonify(payload), 200
+
 @app.post("/api/mobile/geofences")
 def api_mobile_geofences():
     """
