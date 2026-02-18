@@ -678,7 +678,7 @@ def dev_routes():
         return jsonify({"ok": False, "error": msg}), code
     return jsonify(sorted([str(r) for r in app.url_map.iter_rules()]))
 
-@app.get("/dev/export-stores")
+@app.get("/dev/export-stores", endpoint="dev_export_stores_v2")
 def dev_export_stores():
     ok, err = _dev_guard()
     if not ok:
@@ -700,7 +700,7 @@ def dev_export_stores():
         ]
     })
 
-@app.get("/dev/export-employees")
+@app.get("/dev/export-employees", endpoint="dev_export_employees_v2")
 def dev_export_employees():
     ok, err = _dev_guard()
     if not ok:
