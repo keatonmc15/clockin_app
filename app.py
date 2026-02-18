@@ -977,6 +977,80 @@ def api_mobile_status():
     db.session.commit()
     return jsonify(payload), 200
 
+@app.post("/api/mobile/clock-in")
+def api_mobile_clock_in():
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+
+    pin = (data.get("pin") or "").strip()
+    lat = data.get("lat")
+    lon = data.get("lon")
+    accuracy_m = data.get("accuracy_m")
+    device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
+    device_label = _coerce_str(data.get("device_label"))
+
+    if not pin or lat is None or lon is None:
+        return jsonify({"ok": False, "error": "missing_required_fields"}), 400
+
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        if accuracy_m is not None:
+            accuracy_m = float(accuracy_m)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid_location"}), 400
+
+    emp = Employee.query.filter_by(pin=pin).first()
+    if not emp or not emp.active:
+        return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
+
+    # Prevent double clock-in
+    existing = Shift.query.filter(
+        Shift.employee_id == emp.id,
+        Shift.clock_out.is_(None)
+    ).first()
+
+    if existing:
+        return jsonify({"ok": False, "error": "already_clocked_in"}), 409
+
+    # Auto-detect store from location
+    result = find_store_for_location(lat, lon, accuracy_m)
+    if not result.get("ok"):
+        return jsonify({"ok": False, "error": "location_invalid", **result}), 403
+
+    store = result["store"]
+
+    # Device guardrail
+    if device_uuid:
+        other = _device_has_other_open_shift(device_uuid, emp.id)
+        if other:
+            return jsonify({"ok": False, "error": "device_in_use"}), 409
+
+    _touch_employee_device(emp, device_uuid, device_label)
+
+    shift = Shift(
+        employee_id=emp.id,
+        store_id=store.id,
+        clock_in=now_utc(),
+        clock_in_lat=lat,
+        clock_in_lng=lon,
+        clock_in_device_uuid=device_uuid
+    )
+
+    db.session.add(shift)
+    db.session.commit()
+
+    return jsonify({
+        "ok": True,
+        "shift_id": shift.id,
+        "store_name": store.name,
+        "clock_in_utc": shift.clock_in.isoformat() + "Z"
+    })
+
 @app.post("/api/mobile/geofences")
 def api_mobile_geofences():
     """
