@@ -49,37 +49,53 @@ logging.basicConfig(level=logging.INFO)
 
 app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev_secret_change_me")
 
+# ✅ Mobile ingest auth token (set on Render)
+app.config["MOBILE_DEVICE_TOKEN"] = (os.environ.get("MOBILE_DEVICE_TOKEN") or "").strip()
+
+# ✅ Dev endpoint gate
+ENABLE_DEV_EXPORTS = (os.environ.get("ENABLE_DEV_EXPORTS") or "").strip() == "1"
+
 # ------------------------------------------------------------
 # Database config
-#   - Local default: SQLite
-#   - Render: set USE_RENDER_DB=1 (or just set on Render only)
+#   - Prefer DATABASE_URL if present (Render)
+#   - Still supports USE_RENDER_DB=1 if you like
+#   - Local fallback: sqlite relative path
 # ------------------------------------------------------------
-use_render_db = (os.environ.get("USE_RENDER_DB") or "").strip() == "1"
-
-if use_render_db:
-    db_url = (os.environ.get("DATABASE_URL") or "").strip()
-    if not db_url:
-        raise RuntimeError("USE_RENDER_DB=1 but DATABASE_URL is not set")
+def _normalize_db_url(raw: str) -> str:
+    raw = (raw or "").strip()
+    if not raw:
+        return raw
 
     # Normalize Render postgres URL
-    if db_url.startswith("postgres://"):
-        db_url = db_url.replace("postgres://", "postgresql://", 1)
+    if raw.startswith("postgres://"):
+        raw = raw.replace("postgres://", "postgresql://", 1)
 
     # FORCE psycopg v3 (required for Python 3.13)
-    if db_url.startswith("postgresql://") and not db_url.startswith("postgresql+psycopg://"):
-        db_url = db_url.replace("postgresql://", "postgresql+psycopg://", 1)
+    if raw.startswith("postgresql://") and not raw.startswith("postgresql+psycopg://"):
+        raw = raw.replace("postgresql://", "postgresql+psycopg://", 1)
+
+    return raw
+
+
+use_render_db = (os.environ.get("USE_RENDER_DB") or "").strip() == "1"
+env_db_url = _normalize_db_url(os.environ.get("DATABASE_URL"))
+
+if use_render_db:
+    if not env_db_url:
+        raise RuntimeError("USE_RENDER_DB=1 but DATABASE_URL is not set")
+    db_url = env_db_url
 else:
-    # Local fallback
-    db_url = db_url = "sqlite:///C:/clockin_app/instance/clockin.db"
+    # Render-safe: if DATABASE_URL exists anyway, use it
+    if env_db_url:
+        db_url = env_db_url
+    else:
+        # Local fallback (relative path; works on Windows + Render)
+        db_url = "sqlite:///instance/clockin.db"
 
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
-# ✅ Mobile ingest auth token (set on Render)
-app.config["MOBILE_DEVICE_TOKEN"] = (os.environ.get("MOBILE_DEVICE_TOKEN") or "").strip()
-
 db = SQLAlchemy(app)
-
 
 # -----------------------------
 # Flask-Migrate (optional)
@@ -140,128 +156,6 @@ class Store(db.Model):
     geofence_radius_m = db.Column(db.Integer, nullable=False, default=150)
 
     created_at = db.Column(db.DateTime, default=lambda: now_utc())
-# -----------------------------
-# Geo Helpers
-# -----------------------------
-def haversine_m(lat1, lon1, lat2, lon2) -> float:
-    """
-    Returns distance in meters between two WGS84 lat/lon points.
-    """
-    R = 6371000.0  # meters
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlmb = math.radians(lon2 - lon1)
-
-    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2.0) ** 2
-    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
-    return R * c
-
-
-def find_store_for_location(
-    lat: float,
-    lon: float,
-    accuracy_m: float | None = None,
-    *,
-    max_accuracy_m: float = 120.0,
-    sanity_gap_m: float = 800.0,
-):
-    """
-    Returns a dict with the best-matching store and distance, or None if not inside any store geofence.
-
-    - accuracy gate: if provided and too large, return None (force user to get a better GPS fix).
-    - sanity gap: if the nearest and 2nd nearest are "too close" in distance, treat as ambiguous (rare if stores are miles apart).
-    """
-
-    # Optional: reject bad GPS fixes (huge source of "I'm at the store but it says no")
-    if accuracy_m is not None and accuracy_m > max_accuracy_m:
-        return {
-            "ok": False,
-            "reason": "accuracy_too_low",
-            "message": "GPS accuracy is too low. Step outside and try again.",
-            "accuracy_m": float(accuracy_m),
-            "max_accuracy_m": float(max_accuracy_m),
-        }
-
-    stores = db.session.execute(select(Store)).scalars().all()
-    if not stores:
-        return {"ok": False, "reason": "no_stores", "message": "No stores are configured."}
-
-    # Compute distances to all stores (18 stores = trivial)
-    distances = []
-    for s in stores:
-        d = haversine_m(lat, lon, s.latitude, s.longitude)
-        distances.append((d, s))
-
-    distances.sort(key=lambda x: x[0])
-    best_d, best_store = distances[0]
-
-    # Second-place sanity check (cheap insurance; mostly irrelevant if stores are miles apart)
-    if len(distances) > 1:
-        second_d, _ = distances[1]
-        if (second_d - best_d) < sanity_gap_m:
-            # Ambiguous (rare). If you *want* to allow it anyway, remove this block.
-            return {
-                "ok": False,
-                "reason": "ambiguous_nearest",
-                "message": "Location is ambiguous between two stores. Move closer to the building and try again.",
-                "best_distance_m": float(best_d),
-                "second_distance_m": float(second_d),
-                "sanity_gap_m": float(sanity_gap_m),
-            }
-
-    # Hard geofence gate
-    if best_d <= best_store.geofence_radius_m:
-        return {
-            "ok": True,
-            "store": best_store,
-            "distance_m": float(best_d),
-        }
-
-    return {
-        "ok": False,
-        "reason": "outside_geofence",
-        "message": "You are not within a valid store location.",
-        "nearest_store_id": int(best_store.id),
-        "nearest_store_name": best_store.name,
-        "nearest_distance_m": float(best_d),
-        "required_radius_m": float(best_store.geofence_radius_m),
-    }
-# -----------------------------
-# Mobile API Routes
-# -----------------------------
-@app.post("/mobile/validate-location")
-def mobile_validate_location():
-    data = request.get_json(silent=True) or {}
-
-    lat = data.get("lat")
-    lon = data.get("lon")
-    accuracy_m = data.get("accuracy_m")
-
-    if lat is None or lon is None:
-        return jsonify({"ok": False, "error": "missing_lat_lon"}), 400
-
-    try:
-        lat = float(lat)
-        lon = float(lon)
-        if accuracy_m is not None:
-            accuracy_m = float(accuracy_m)
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "invalid_lat_lon"}), 400
-
-    result = find_store_for_location(lat, lon, accuracy_m)
-
-    if not result.get("ok"):
-        return jsonify(result), 200
-
-    store = result["store"]
-    return jsonify({
-        "ok": True,
-        "store_id": store.id,
-        "store_name": store.name,
-        "distance_m": result["distance_m"],
-        "geofence_radius_m": store.geofence_radius_m,
-    }), 200
 
 class Employee(db.Model):
     __tablename__ = "employees"
@@ -278,7 +172,6 @@ class Employee(db.Model):
 
     created_at = db.Column(db.DateTime, default=lambda: now_utc())
 
-
 class Shift(db.Model):
     __tablename__ = "shifts"
     id = db.Column(db.Integer, primary_key=True)
@@ -294,7 +187,7 @@ class Shift(db.Model):
     clock_out_lat = db.Column(db.Float, nullable=True)
     clock_out_lng = db.Column(db.Float, nullable=True)
 
-    # ✅ Option 2: capture device uuid on punches (enables "one active employee per device" rule)
+    # ✅ Option 2: capture device uuid on punches
     clock_in_device_uuid = db.Column(db.String(120), nullable=True)
     clock_out_device_uuid = db.Column(db.String(120), nullable=True)
 
@@ -308,7 +201,6 @@ class Shift(db.Model):
 
     employee = db.relationship("Employee", backref="shifts")
     store = db.relationship("Store", backref="shifts")
-
 
 # ✅ Location pings (15-min tracking)
 class LocationPing(db.Model):
@@ -331,8 +223,7 @@ class LocationPing(db.Model):
     shift = db.relationship("Shift")
     store = db.relationship("Store")
 
-
-# ✅ NEW (Step 2): Shift edit audit trail (Option B-safe: new table)
+# ✅ NEW: Shift edit audit trail (Option B-safe: new table)
 class ShiftEditAudit(db.Model):
     __tablename__ = "shift_edit_audit"
     id = db.Column(db.Integer, primary_key=True)
@@ -351,14 +242,8 @@ class ShiftEditAudit(db.Model):
 
     shift = db.relationship("Shift")
 
-
 # ✅ Mobile ingest raw event store (Option B-safe: new table)
 class MobileEvent(db.Model):
-    """
-    Stores raw Transistorsoft Background Geolocation events for audit/debug.
-    Keep this table light: extract only a few useful fields for filtering,
-    and keep the full payload in raw_json.
-    """
     __tablename__ = "mobile_events"
     id = db.Column(db.Integer, primary_key=True)
 
@@ -366,20 +251,92 @@ class MobileEvent(db.Model):
     device_uuid = db.Column(db.String(120), nullable=True)
     is_moving = db.Column(db.Boolean, nullable=True)
 
-    # Optional normalized coords when present
     lat = db.Column(db.Float, nullable=True)
     lng = db.Column(db.Float, nullable=True)
     accuracy = db.Column(db.Float, nullable=True)
 
-    # When the event occurred (from payload timestamp if present)
     event_at = db.Column(db.DateTime, nullable=True)
-
-    # When server received it
     received_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
 
-    # Raw payload as JSON string
     raw_json = db.Column(db.Text, nullable=False)
 
+# -----------------------------
+# Geo Helpers
+# -----------------------------
+def haversine_m(lat1, lon1, lat2, lon2) -> float:
+    """
+    Returns distance in meters between two WGS84 lat/lon points.
+    """
+    R = 6371000.0  # meters
+    phi1 = math.radians(lat1)
+    phi2 = math.radians(lat2)
+    dphi = math.radians(lat2 - lat1)
+    dlmb = math.radians(lon2 - lon1)
+
+    a = math.sin(dphi / 2.0) ** 2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlmb / 2.0) ** 2
+    c = 2.0 * math.atan2(math.sqrt(a), math.sqrt(1.0 - a))
+    return R * c
+
+def find_store_for_location(
+    lat: float,
+    lon: float,
+    accuracy_m: float | None = None,
+    *,
+    max_accuracy_m: float = 120.0,
+    sanity_gap_m: float = 800.0,
+):
+    """
+    Returns a dict with the best-matching store and distance, or None if not inside any store geofence.
+    """
+    if accuracy_m is not None and accuracy_m > max_accuracy_m:
+        return {
+            "ok": False,
+            "reason": "accuracy_too_low",
+            "message": "GPS accuracy is too low. Step outside and try again.",
+            "accuracy_m": float(accuracy_m),
+            "max_accuracy_m": float(max_accuracy_m),
+        }
+
+    stores = db.session.execute(select(Store)).scalars().all()
+    if not stores:
+        return {"ok": False, "reason": "no_stores", "message": "No stores are configured."}
+
+    distances = []
+    for s in stores:
+        d = haversine_m(lat, lon, s.latitude, s.longitude)
+        distances.append((d, s))
+
+    distances.sort(key=lambda x: x[0])
+    best_d, best_store = distances[0]
+
+    if len(distances) > 1:
+        second_d, _ = distances[1]
+        if (second_d - best_d) < sanity_gap_m:
+            return {
+                "ok": False,
+                "reason": "ambiguous_nearest",
+                "message": "Location is ambiguous between two stores. Move closer to the building and try again.",
+                "best_distance_m": float(best_d),
+                "second_distance_m": float(second_d),
+                "sanity_gap_m": float(sanity_gap_m),
+            }
+
+    if best_d <= best_store.geofence_radius_m:
+        return {
+            "ok": True,
+            "store": best_store,
+            "distance_m": float(best_d),
+        }
+
+    return {
+        "ok": False,
+        "reason": "outside_geofence",
+        "message": "You are not within a valid store location.",
+        "nearest_store_id": int(best_store.id),
+        "nearest_store_name": best_store.name,
+        "nearest_distance_m": float(best_d),
+        "required_radius_m": float(best_store.geofence_radius_m),
+    }
 
 # -----------------------------
 # Helpers (general)
@@ -405,7 +362,6 @@ def parse_local_datetime(val: str) -> datetime | None:
                 local_dt = naive.replace(tzinfo=APP_TZ)
                 utc_dt = local_dt.astimezone(UTC_TZ)
                 return utc_dt.replace(tzinfo=None)  # store naive UTC
-            # fallback: store naive as-is
             return naive
         except ValueError:
             continue
@@ -413,24 +369,13 @@ def parse_local_datetime(val: str) -> datetime | None:
 
 def local_range_to_utc_naive(start_local: datetime, end_local: datetime) -> tuple[datetime, datetime]:
     """
-    Converts tz-aware local week bounds (America/Chicago) to UTC-naive for DB filtering.
+    Converts tz-aware local bounds (America/Chicago) to UTC-naive for DB filtering.
     """
     if APP_TZ and UTC_TZ and getattr(start_local, "tzinfo", None) and getattr(end_local, "tzinfo", None):
         s_utc = start_local.astimezone(UTC_TZ).replace(tzinfo=None)
         e_utc = end_local.astimezone(UTC_TZ).replace(tzinfo=None)
         return s_utc, e_utc
     return start_local.replace(tzinfo=None), end_local.replace(tzinfo=None)
-
-def haversine_m(lat1, lon1, lat2, lon2) -> float:
-    R = 6371000.0
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dl = math.radians(lon2 - lon1)
-
-    a = math.sin(dphi / 2) ** 2 + math.cos(phi1 * 1.0) * math.cos(phi2 * 1.0) * math.sin(dl / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
 
 # ✅ Step 1: minute-accurate shift minutes (NO quarter-hour rounding)
 def shift_minutes(shift: "Shift") -> int:
@@ -442,7 +387,6 @@ def shift_minutes(shift: "Shift") -> int:
     return int(seconds // 60)  # whole minutes
 
 def minutes_to_human(minutes: int) -> str:
-    """Legacy human formatting (kept for templates / API responses)."""
     if minutes <= 0:
         return "0 min"
     hours = minutes // 60
@@ -455,7 +399,6 @@ def minutes_to_human(minutes: int) -> str:
         return f"{mins} min"
 
 def minutes_to_short(minutes: int) -> str:
-    """Short format for payroll: '4h 15m' (always shows hours + 2-digit minutes)."""
     if minutes <= 0:
         return "0h 00m"
     h = minutes // 60
@@ -471,13 +414,11 @@ def minutes_to_decimal_hours(minutes: int, places: int = 4) -> str:
     )
     return format(val, "f")
 
-# (kept for compatibility where used)
 def shift_hours(shift: "Shift") -> float:
     mins = shift_minutes(shift)
     return float(Decimal(mins) / Decimal(60)) if mins else 0.0
 
 def last_completed_payroll_week(reference: datetime | None = None):
-    # Payroll week definition should be based on LOCAL time (America/Chicago)
     ref_local = reference or now_local()
     weekday = ref_local.weekday()  # Monday=0
     this_monday = ref_local.date() - timedelta(days=weekday)
@@ -540,6 +481,14 @@ def _require_mobile_auth():
 
     return True, None
 
+def _dev_guard():
+    if not ENABLE_DEV_EXPORTS:
+        return False, ("not_found", 404)
+    ok, err = _require_mobile_auth()
+    if not ok:
+        return False, err
+    return True, None
+
 def _safe_json_dumps(obj) -> str:
     try:
         return json.dumps(obj, ensure_ascii=False, separators=(",", ":"))
@@ -547,12 +496,6 @@ def _safe_json_dumps(obj) -> str:
         return json.dumps({"_error": "json_dumps_failed"}, separators=(",", ":"))
 
 def _extract_location_coords(payload: dict) -> tuple[dict, dict]:
-    """
-    Returns (location_dict, coords_dict). Either may be empty.
-    BG sometimes sends:
-      - { event: 'location', location: { coords: {...}, timestamp: ms, ... } }
-      - { name/type/event: ..., params/data: { location: {...} } }
-    """
     loc = {}
     if isinstance(payload.get("location"), dict):
         loc = payload.get("location") or {}
@@ -592,7 +535,7 @@ def _coerce_str(val, max_len: int = 120) -> str | None:
 def _touch_employee_device(emp: "Employee", device_uuid: str | None, device_label: str | None):
     """
     Option C behavior: if device_uuid provided, overwrite employee.device_uuid.
-    Never blocks clock-ins. Used by /api/clockin, /api/clockout, /api/ping, /api/mobile/me
+    Never blocks clock-ins.
     """
     if not device_uuid:
         return
@@ -640,6 +583,7 @@ def _ensure_column(table_name: str, column_name: str, sql_type: str):
     """
     Best-effort: add a column if it doesn't exist.
     Works for SQLite and Postgres for simple ADD COLUMN cases.
+    Race-safe on Render: ignores "already exists" errors.
     """
     try:
         bind = db.engine
@@ -662,10 +606,6 @@ def _ensure_column(table_name: str, column_name: str, sql_type: str):
             rows = db.session.execute(q).fetchall()
             exists = any((r[1] == column_name) for r in rows)  # r[1] = name
 
-        else:
-            # Unknown dialect; just try ALTER and ignore failures
-            exists = False
-
         if exists:
             return
 
@@ -673,9 +613,12 @@ def _ensure_column(table_name: str, column_name: str, sql_type: str):
         db.session.commit()
         app.logger.info("Added missing column %s.%s", table_name, column_name)
 
-    except Exception:
+    except Exception as e:
         db.session.rollback()
-        # Don't crash boot if column add fails
+        msg = str(e).lower()
+        if "already exists" in msg or "duplicate" in msg:
+            app.logger.info("Column already exists (race): %s.%s", table_name, column_name)
+            return
         app.logger.exception("Could not ensure column %s.%s", table_name, column_name)
 
 # -----------------------------
@@ -703,8 +646,23 @@ with app.app_context():
 def fingerprint():
     return "clockin_app LIVE fingerprint 2026-02-16"
 
+# -----------------------------
+# Optional: favicon
+# -----------------------------
+@app.get("/favicon.ico")
+def favicon():
+    return ("", 204)
+
+# -----------------------------
+# DEV endpoints (locked down)
+# -----------------------------
 @app.get("/dev/db-info")
 def dev_db_info():
+    ok, err = _dev_guard()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
     uri = app.config.get("SQLALCHEMY_DATABASE_URI", "")
     return jsonify({
         "ok": True,
@@ -712,12 +670,182 @@ def dev_db_info():
         "store_count": Store.query.count(),
     })
 
-# -----------------------------
-# Optional: favicon
-# -----------------------------
-@app.get("/favicon.ico")
-def favicon():
-    return ("", 204)
+@app.get("/dev/routes")
+def dev_routes():
+    ok, err = _dev_guard()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+    return jsonify(sorted([str(r) for r in app.url_map.iter_rules()]))
+
+@app.get("/dev/export-stores")
+def dev_export_stores():
+    ok, err = _dev_guard()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    stores = Store.query.order_by(Store.id.asc()).all()
+    return jsonify({
+        "ok": True,
+        "stores": [
+            {
+                "name": s.name,
+                "qr_token": s.qr_token,
+                "latitude": s.latitude,
+                "longitude": s.longitude,
+                "geofence_radius_m": s.geofence_radius_m,
+            }
+            for s in stores
+        ]
+    })
+
+@app.get("/dev/export-employees")
+def dev_export_employees():
+    ok, err = _dev_guard()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    emps = Employee.query.order_by(Employee.id.asc()).all()
+    return jsonify({
+        "ok": True,
+        "employees": [
+            {"name": e.name, "pin": e.pin, "active": bool(e.active)}
+            for e in emps
+        ]
+    })
+
+@app.post("/dev/import-stores")
+def dev_import_stores():
+    ok, err = _dev_guard()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+    stores = data.get("stores") or []
+    if not isinstance(stores, list):
+        return jsonify({"ok": False, "error": "stores_must_be_list"}), 400
+
+    upserted = 0
+    for s in stores:
+        name = (s.get("name") or "").strip()
+        qr_token = normalize_store_code(s.get("qr_token") or "")
+        lat = s.get("latitude")
+        lon = s.get("longitude")
+        radius = s.get("geofence_radius_m", 150)
+
+        if not name or not qr_token or lat is None or lon is None:
+            continue
+
+        try:
+            lat = float(lat)
+            lon = float(lon)
+            radius = int(radius)
+        except (TypeError, ValueError):
+            continue
+
+        existing = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
+        if existing:
+            existing.name = name
+            existing.latitude = lat
+            existing.longitude = lon
+            existing.geofence_radius_m = radius
+        else:
+            db.session.add(Store(
+                name=name,
+                qr_token=qr_token,
+                latitude=lat,
+                longitude=lon,
+                geofence_radius_m=radius,
+                created_at=now_utc()
+            ))
+        upserted += 1
+
+    db.session.commit()
+    return jsonify({"ok": True, "imported_or_updated": upserted})
+
+@app.post("/dev/import-employees")
+def dev_import_employees():
+    ok, err = _dev_guard()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+    employees = data.get("employees") or []
+    if not isinstance(employees, list):
+        return jsonify({"ok": False, "error": "employees_must_be_list"}), 400
+
+    upserted = 0
+    for e in employees:
+        name = (e.get("name") or "").strip()
+        pin = (e.get("pin") or "").strip()
+        active = bool(e.get("active", True))
+
+        if not name or not pin:
+            continue
+
+        existing = Employee.query.filter_by(pin=pin).first()
+        if existing:
+            existing.name = name
+            existing.active = active
+        else:
+            db.session.add(Employee(
+                name=name,
+                pin=pin,
+                active=active,
+                created_at=now_utc()
+            ))
+        upserted += 1
+
+    db.session.commit()
+    return jsonify({"ok": True, "imported_or_updated": upserted})
+
+@app.post("/dev/add-store")
+def dev_add_store():
+    ok, err = _dev_guard()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+
+    name = (data.get("name") or "").strip()
+    qr_token = normalize_store_code(data.get("qr_token") or "")
+    lat = data.get("lat")
+    lon = data.get("lon")
+    radius = data.get("geofence_radius_m", 200)
+
+    if not name or not qr_token or lat is None or lon is None:
+        return jsonify({"ok": False, "error": "missing_fields", "required": ["name", "qr_token", "lat", "lon"]}), 400
+
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        radius = int(radius)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid_values"}), 400
+
+    store = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
+    if store:
+        store.name = name
+        store.latitude = lat
+        store.longitude = lon
+        store.geofence_radius_m = radius
+    else:
+        store = Store(
+            name=name,
+            qr_token=qr_token,
+            latitude=lat,
+            longitude=lon,
+            geofence_radius_m=radius
+        )
+        db.session.add(store)
+
+    db.session.commit()
+    return jsonify({"ok": True, "store_id": store.id, "name": store.name})
 
 # -----------------------------
 # Store Suggest API (Autocomplete)
@@ -803,8 +931,7 @@ def api_mobile_geofences():
     data = request.get_json(silent=True) or {}
 
     pin = (data.get("pin") or "").strip()
-    qr_token_raw = (data.get("qr_token") or "").strip()
-    qr_token = normalize_store_code(qr_token_raw)
+    qr_token = normalize_store_code((data.get("qr_token") or "").strip())
 
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
@@ -871,7 +998,6 @@ def api_mobile_bg_event():
     lng = coords.get("longitude")
     accuracy = coords.get("accuracy")
 
-    # event_at (UTC naive) from timestamp ms if present
     event_at = _extract_event_at(payload, loc)
 
     try:
@@ -892,15 +1018,12 @@ def api_mobile_bg_event():
         app.logger.exception("MOBILE_BG_EVENT_SAVE_FAILED")
         return jsonify({"ok": False, "error": "db_error"}), 500
 
-    # Minimal response (fast)
     return jsonify({"ok": True, "id": evt.id})
 
 @app.post("/api/mobile/bg/locations")
 def api_mobile_bg_locations_bulk():
     """
     Optional bulk endpoint if you configure BG to POST arrays of locations.
-    Expected payload:
-      { "locations": [ {coords:{...}, timestamp:ms, ...}, ... ], "uuid": "..." }
     """
     ok, err = _require_mobile_auth()
     if not ok:
@@ -955,12 +1078,54 @@ def api_mobile_bg_locations_bulk():
 
     return jsonify({"ok": True, "saved": saved})
 
-@app.get("/dev/routes")
-def dev_routes():
-    return jsonify(sorted([str(r) for r in app.url_map.iter_rules()]))
+# -----------------------------
+# Legacy-ish mobile endpoints (now token protected)
+# -----------------------------
+@app.post("/mobile/validate-location")
+def mobile_validate_location():
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+
+    lat = data.get("lat")
+    lon = data.get("lon")
+    accuracy_m = data.get("accuracy_m")
+
+    if lat is None or lon is None:
+        return jsonify({"ok": False, "error": "missing_lat_lon"}), 400
+
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        if accuracy_m is not None:
+            accuracy_m = float(accuracy_m)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid_lat_lon"}), 400
+
+    result = find_store_for_location(lat, lon, accuracy_m)
+
+    if not result.get("ok"):
+        return jsonify(result), 200
+
+    store = result["store"]
+    return jsonify({
+        "ok": True,
+        "store_id": store.id,
+        "store_name": store.name,
+        "distance_m": result["distance_m"],
+        "geofence_radius_m": store.geofence_radius_m,
+    }), 200
 
 @app.post("/mobile/clock-in")
 def mobile_clock_in():
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
     data = request.get_json(silent=True) or {}
 
     pin = (data.get("pin") or "").strip()
@@ -984,24 +1149,17 @@ def mobile_clock_in():
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "invalid_lat_lon"}), 400
 
-    # 1) Find employee by PIN
     employee = Employee.query.filter_by(pin=pin, active=True).first()
     if not employee:
         return jsonify({"ok": False, "error": "invalid_pin"}), 401
 
-    # 2) Determine store from location (hybrid auto-assign)
     store_result = find_store_for_location(lat, lon, accuracy_m)
     if not store_result.get("ok"):
-        return jsonify({
-            "ok": False,
-            "error": "location_invalid",
-            **store_result
-        }), 200
+        return jsonify({"ok": False, "error": "location_invalid", **store_result}), 200
 
     store = store_result["store"]
     dist_m = store_result.get("distance_m")
 
-    # 3) If already clocked in (open shift), return it
     open_shift = Shift.query.filter_by(employee_id=employee.id, clock_out=None).order_by(Shift.clock_in.desc()).first()
     if open_shift:
         return jsonify({
@@ -1015,11 +1173,10 @@ def mobile_clock_in():
             "clock_in": open_shift.clock_in.isoformat(),
         }), 200
 
-    # 4) Create shift
     shift = Shift(
         employee_id=employee.id,
         store_id=store.id,
-        clock_in=now_utc(),  # use your existing now_utc()
+        clock_in=now_utc(),
         clock_in_lat=lat,
         clock_in_lng=lon,
         clock_in_device_uuid=device_uuid,
@@ -1059,12 +1216,10 @@ def api_clockin():
     data = request.get_json(force=True, silent=True) or {}
 
     pin = (data.get("pin") or "").strip()
-    qr_token_raw = (data.get("qr_token") or "").strip()
-    qr_token = normalize_store_code(qr_token_raw)
+    qr_token = normalize_store_code((data.get("qr_token") or "").strip())
     lat = data.get("lat")
     lng = data.get("lng")
 
-    # ✅ Option 2 fields from mobile
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
 
@@ -1085,7 +1240,6 @@ def api_clockin():
         log_event("CLOCKIN_DENY_ALREADY_CLOCKED_IN", employee_id=emp.id, open_shift_id=open_shift.id)
         return jsonify({"error": "You are already clocked in. Please clock out first."}), 409
 
-    # ✅ Device guardrail: one active employee per device (only if device_uuid provided)
     if device_uuid:
         other = _device_has_other_open_shift(device_uuid, emp.id)
         if other:
@@ -1134,13 +1288,12 @@ def api_clockin():
         )
         return jsonify({"error": "You are not at the store location."}), 403
 
-    # ✅ Option C: overwrite employee device binding if device_uuid present
     _touch_employee_device(emp, device_uuid, device_label)
 
     s = Shift(
         employee_id=emp.id,
         store_id=store.id,
-        clock_in=now_utc(),  # ✅ store UTC
+        clock_in=now_utc(),
         clock_in_lat=lat,
         clock_in_lng=lng,
         clock_in_device_uuid=device_uuid,
@@ -1223,10 +1376,9 @@ def api_clockout():
         )
         return jsonify({"error": "You are not at the store location."}), 403
 
-    # ✅ Option C: overwrite device binding if present
     _touch_employee_device(emp, device_uuid, device_label)
 
-    open_shift.clock_out = now_utc()  # ✅ store UTC
+    open_shift.clock_out = now_utc()
     open_shift.clock_out_lat = lat
     open_shift.clock_out_lng = lng
     open_shift.clock_out_device_uuid = device_uuid
@@ -1281,7 +1433,6 @@ def api_ping():
     dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
     inside = dist_m <= store.geofence_radius_m
 
-    # ✅ Option C: update last-seen device
     _touch_employee_device(emp, device_uuid, device_label)
 
     ping = LocationPing(
@@ -1348,12 +1499,10 @@ def admin_dashboard():
     guard = admin_guard()
     if guard: return guard
 
-    # ✅ variables your templates/admin.html expects
     total_employees = Employee.query.count()
     active_employees = Employee.query.filter_by(active=True).count()
     inactive_employees = Employee.query.filter_by(active=False).count()
 
-    # (kept: other useful stats in case you want them later)
     open_shifts = Shift.query.filter_by(clock_out=None).count()
     stores = Store.query.count()
     last7 = now_utc() - timedelta(days=7)
@@ -1375,7 +1524,6 @@ def admin_pings():
     guard = admin_guard()
     if guard: return guard
 
-    # filters
     start_str = (request.args.get("start") or "").strip()
     end_str = (request.args.get("end") or "").strip()
     employee_id = (request.args.get("employee_id") or "").strip()
@@ -1383,7 +1531,6 @@ def admin_pings():
     shift_id = (request.args.get("shift_id") or "").strip()
     inside_raw = (request.args.get("inside") or "all").strip().lower()
 
-    # pagination
     try:
         page = int(request.args.get("page", "1"))
     except ValueError:
@@ -1396,14 +1543,12 @@ def admin_pings():
         per_page = 200
     per_page = max(25, min(per_page, 500))
 
-    # default date range = last 7 local days (today inclusive)
     if not start_str or not end_str:
         today_local = now_local().date()
         default_start = today_local - timedelta(days=7)
         start_str = start_str or default_start.isoformat()
         end_str = end_str or today_local.isoformat()
 
-    # build local bounds then convert to UTC-naive
     try:
         start_date = datetime.strptime(start_str, "%Y-%m-%d").date()
         end_date = datetime.strptime(end_str, "%Y-%m-%d").date()
@@ -1423,14 +1568,12 @@ def admin_pings():
         start_str = (today_local - timedelta(days=7)).isoformat()
         end_str = today_local.isoformat()
 
-    # base query
     q = (
         LocationPing.query
         .filter(LocationPing.created_at >= q_start, LocationPing.created_at <= q_end)
         .order_by(LocationPing.created_at.desc())
     )
 
-    # apply filters
     if employee_id:
         try:
             q = q.filter(LocationPing.employee_id == int(employee_id))
@@ -1457,18 +1600,15 @@ def admin_pings():
         q = q.filter(LocationPing.inside_radius.is_(False))
         inside = "0"
 
-    # page slice (+1 to detect next page)
     offset = (page - 1) * per_page
     items = q.offset(offset).limit(per_page + 1).all()
     has_next = len(items) > per_page
     pings = items[:per_page]
     has_prev = page > 1
 
-    # dropdown data
     employees = Employee.query.order_by(Employee.active.desc(), Employee.name.asc()).all()
     stores = Store.query.order_by(Store.name.asc()).all()
 
-    # count (best-effort)
     try:
         total_in_view = q.count()
     except Exception:
@@ -1492,14 +1632,13 @@ def admin_pings():
         total_in_view=total_in_view,
     )
 
-# ✅ Admin Mobile Event Viewer (new)
+# ✅ Admin Mobile Event Viewer
 @app.get("/admin/mobile-events")
 def admin_mobile_events():
     guard = admin_guard()
     if guard:
         return guard
 
-    # optional query params
     event_type = (request.args.get("event") or "").strip().lower()
     device_uuid = (request.args.get("device") or "").strip()
     try:
@@ -1525,158 +1664,6 @@ def admin_mobile_events():
         event=event_type,
         device=device_uuid,
     )
-
-@app.get("/dev/export-stores")
-def dev_export_stores():
-    token = (request.args.get("token") or "").strip()
-    if not app.config.get("MOBILE_DEVICE_TOKEN") or token != app.config["MOBILE_DEVICE_TOKEN"]:
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-
-    stores = Store.query.order_by(Store.id.asc()).all()
-    return jsonify({
-        "ok": True,
-        "stores": [
-            {
-                "name": s.name,
-                "qr_token": s.qr_token,
-                "latitude": s.latitude,
-                "longitude": s.longitude,
-                "geofence_radius_m": s.geofence_radius_m,
-            }
-            for s in stores
-        ]
-    })
-
-ENABLE_DEV_EXPORTS = (os.environ.get("ENABLE_DEV_EXPORTS") or "").strip() == "1"
-
-if ENABLE_DEV_EXPORTS:
-    @app.get("/dev/export-stores")
-    def dev_export_stores():
-        token = (request.args.get("token") or "").strip()
-        if not app.config.get("MOBILE_DEVICE_TOKEN") or token != app.config["MOBILE_DEVICE_TOKEN"]:
-            return jsonify({"ok": False, "error": "unauthorized"}), 401
-
-        stores = Store.query.order_by(Store.id.asc()).all()
-        return jsonify({
-            "ok": True,
-            "stores": [
-                {
-                    "name": s.name,
-                    "qr_token": s.qr_token,
-                    "latitude": s.latitude,
-                    "longitude": s.longitude,
-                    "geofence_radius_m": s.geofence_radius_m,
-                }
-                for s in stores
-            ]
-        })
-
-    @app.get("/dev/export-employees")
-    def dev_export_employees():
-        token = (request.args.get("token") or "").strip()
-        if not app.config.get("MOBILE_DEVICE_TOKEN") or token != app.config["MOBILE_DEVICE_TOKEN"]:
-            return jsonify({"ok": False, "error": "unauthorized"}), 401
-
-        emps = Employee.query.order_by(Employee.id.asc()).all()
-        return jsonify({
-            "ok": True,
-            "employees": [
-                {"name": e.name, "pin": e.pin, "active": bool(e.active)}
-                for e in emps
-            ]
-        })
-
-@app.get("/dev/export-employees")
-def dev_export_employees():
-    token = (request.args.get("token") or "").strip()
-    if not app.config.get("MOBILE_DEVICE_TOKEN") or token != app.config["MOBILE_DEVICE_TOKEN"]:
-        return jsonify({"ok": False, "error": "unauthorized"}), 401
-
-    emps = Employee.query.order_by(Employee.id.asc()).all()
-    return jsonify({
-        "ok": True,
-        "employees": [
-            {"name": e.name, "pin": e.pin, "active": bool(e.active)}
-            for e in emps
-        ]
-    })
-
-@app.post("/dev/import-stores")
-def dev_import_stores():
-    data = request.get_json(silent=True) or {}
-    stores = data.get("stores") or []
-    if not isinstance(stores, list):
-        return jsonify({"ok": False, "error": "stores_must_be_list"}), 400
-
-    upserted = 0
-    for s in stores:
-        name = (s.get("name") or "").strip()
-        qr_token = (s.get("qr_token") or "").strip()
-        lat = s.get("latitude")
-        lon = s.get("longitude")
-        radius = s.get("geofence_radius_m", 150)
-
-        if not name or not qr_token or lat is None or lon is None:
-            continue
-
-        try:
-            lat = float(lat)
-            lon = float(lon)
-            radius = int(radius)
-        except (TypeError, ValueError):
-            continue
-
-        existing = Store.query.filter_by(qr_token=qr_token).first()
-        if existing:
-            existing.name = name
-            existing.latitude = lat
-            existing.longitude = lon
-            existing.geofence_radius_m = radius
-        else:
-            db.session.add(Store(
-                name=name,
-                qr_token=qr_token,
-                latitude=lat,
-                longitude=lon,
-                geofence_radius_m=radius,
-                created_at=now_utc()
-            ))
-        upserted += 1
-
-    db.session.commit()
-    return jsonify({"ok": True, "imported_or_updated": upserted})
-
-@app.post("/dev/import-employees")
-def dev_import_employees():
-    data = request.get_json(silent=True) or {}
-    employees = data.get("employees") or []
-    if not isinstance(employees, list):
-        return jsonify({"ok": False, "error": "employees_must_be_list"}), 400
-
-    upserted = 0
-    for e in employees:
-        name = (e.get("name") or "").strip()
-        pin = (e.get("pin") or "").strip()
-        active = bool(e.get("active", True))
-
-        if not name or not pin:
-            continue
-
-        existing = Employee.query.filter_by(pin=pin).first()
-        if existing:
-            existing.name = name
-            existing.active = active
-        else:
-            db.session.add(Employee(
-                name=name,
-                pin=pin,
-                active=active,
-                created_at=now_utc()
-            ))
-        upserted += 1
-
-    db.session.commit()
-    return jsonify({"ok": True, "imported_or_updated": upserted})
 
 # -------- Bulk Import (stores + employees) --------
 @app.route("/admin/import", methods=["GET", "POST"])
@@ -1845,7 +1832,6 @@ def admin_employees():
                 db.session.commit()
                 flash(f"Employee {'activated' if emp.active else 'deactivated'}.", "success")
 
-    # --- View filter (tabs) ---
     view = (request.args.get("view") or "active").strip().lower()
 
     q = Employee.query
@@ -1854,13 +1840,10 @@ def admin_employees():
     elif view == "all":
         pass
     else:
-        # default = active only
         q = q.filter(Employee.active.is_(True))
         view = "active"
 
     employees = q.order_by(Employee.name.asc()).all()
-
-    # optional: show inactive count on the tabs
     inactive_count = Employee.query.filter(Employee.active.is_(False)).count()
 
     return render_template(
@@ -1933,8 +1916,7 @@ def admin_stores():
 
         if action == "create":
             name = (request.form.get("name") or "").strip()
-            qr_token_raw = (request.form.get("qr_token") or "")
-            qr_token = normalize_store_code(qr_token_raw)
+            qr_token = normalize_store_code(request.form.get("qr_token") or "")
             lat = request.form.get("latitude")
             lng = request.form.get("longitude")
             radius = request.form.get("geofence_radius_m") or "150"
@@ -2106,46 +2088,6 @@ def admin_force_close_shift():
     flash("Shift force-closed (admin override).", "success")
     return redirect(url_for("admin_shifts"))
 
-@app.post("/dev/add-store")
-def dev_add_store():
-    data = request.get_json(silent=True) or {}
-
-    name = (data.get("name") or "").strip()
-    qr_token = (data.get("qr_token") or "").strip()
-    lat = data.get("lat")
-    lon = data.get("lon")
-    radius = data.get("geofence_radius_m", 200)
-
-    if not name or not qr_token or lat is None or lon is None:
-        return jsonify({"ok": False, "error": "missing_fields", "required": ["name","qr_token","lat","lon"]}), 400
-
-    try:
-        lat = float(lat)
-        lon = float(lon)
-        radius = int(radius)
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "invalid_values"}), 400
-
-    # Upsert by qr_token (unique)
-    store = Store.query.filter_by(qr_token=qr_token).first()
-    if store:
-        store.name = name
-        store.latitude = lat
-        store.longitude = lon
-        store.geofence_radius_m = radius
-    else:
-        store = Store(
-            name=name,
-            qr_token=qr_token,
-            latitude=lat,
-            longitude=lon,
-            geofence_radius_m=radius
-        )
-        db.session.add(store)
-
-    db.session.commit()
-    return jsonify({"ok": True, "store_id": store.id, "name": store.name})
-
 @app.route("/admin/shifts/new", methods=["GET", "POST"])
 def admin_shift_new():
     guard = admin_guard()
@@ -2313,7 +2255,6 @@ def admin_payroll():
     else:
         start_dt, end_dt = last_completed_payroll_week()
 
-    # ✅ Convert local payroll window to UTC-naive for DB filter
     q_start, q_end = local_range_to_utc_naive(start_dt, end_dt)
 
     shifts = Shift.query.filter(
@@ -2322,12 +2263,8 @@ def admin_payroll():
         Shift.clock_out <= q_end
     ).order_by(Shift.clock_out.asc()).all()
 
-    # Detail rows (still useful for auditing)
     rows = []
     totals_by_emp_min = {}
-
-    # Option A grid aggregation:
-    # weekly_map[employee][weekday_index][store_name] = minutes
     weekly_map: dict[str, dict[int, dict[str, int]]] = {}
 
     for s in shifts:
@@ -2335,7 +2272,6 @@ def admin_payroll():
         emp_name = s.employee.name
         store_name = s.store.name
 
-        # Detail
         rows.append({
             "employee": emp_name,
             "store": store_name,
@@ -2346,7 +2282,6 @@ def admin_payroll():
         })
         totals_by_emp_min[emp_name] = totals_by_emp_min.get(emp_name, 0) + mins
 
-        # Assign to CLOCK-IN day (LOCAL)
         cin_local = utc_naive_to_local(s.clock_in)
         wd = cin_local.weekday()  # Mon=0 ... Sun=6
 
@@ -2356,7 +2291,6 @@ def admin_payroll():
             weekly_map[emp_name][wd] = {}
         weekly_map[emp_name][wd][store_name] = weekly_map[emp_name][wd].get(store_name, 0) + mins
 
-    # Summary list (kept for the UI page)
     summary = []
     for emp_name in sorted(totals_by_emp_min.keys(), key=lambda x: x.lower()):
         m = totals_by_emp_min[emp_name]
@@ -2373,22 +2307,17 @@ def admin_payroll():
     grand_human_short = minutes_to_short(grand_minutes)
     grand_hours_decimal = minutes_to_decimal_hours(grand_minutes, places=4)
 
-    # -----------------------------
-    # CSV export
-    # -----------------------------
     if out_format == "csv":
         from io import StringIO
 
         si = StringIO()
         w = csv.writer(si)
 
-        # Header
         w.writerow(["Payroll Week Start (local)", start_dt.date().isoformat()])
         w.writerow(["Payroll Week End (local)", end_dt.date().isoformat()])
         w.writerow(["Note", "Weekly filter uses CLOCK-OUT date; day columns assign time to CLOCK-IN day (local)."])
         w.writerow([])
 
-        # Option A grid
         day_headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         w.writerow(["Employee"] + day_headers + ["Total"])
 
@@ -2415,7 +2344,6 @@ def admin_payroll():
         w.writerow(["GRAND TOTAL"] + [""] * 7 + [grand_human_short])
         w.writerow([])
 
-        # Detail section (audit)
         w.writerow(["Shift Detail"])
         w.writerow(["Employee", "Store", "Clock In", "Clock Out", "Minutes", "Time (Short)"])
         for r in rows:
@@ -2429,18 +2357,13 @@ def admin_payroll():
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
-    # -----------------------------
-    # XLSX export (ALL widths = 25)
-    # -----------------------------
     if out_format == "xlsx":
         from io import BytesIO
 
         wb = Workbook()
-
         header_font = Font(bold=True)
         wrap = Alignment(wrap_text=True, vertical="top")
 
-        # ---- Sheet 1: Weekly ----
         ws = wb.active
         ws.title = "Weekly"
 
@@ -2489,7 +2412,6 @@ def admin_payroll():
 
         ws.freeze_panes = "A6"
 
-        # ---- Sheet 2: Shift Detail ----
         ws2 = wb.create_sheet("Shift Detail")
         detail_headers = ["Employee", "Store", "Clock In", "Clock Out", "Minutes", "Time (Short)"]
         ws2.append(detail_headers)
@@ -2523,9 +2445,6 @@ def admin_payroll():
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
 
-    # -----------------------------
-    # ✅ Build Option A grid for the UI page (Mon–Sun)
-    # -----------------------------
     day_headers = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
     grid_rows = []
 
