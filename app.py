@@ -875,6 +875,15 @@ def api_stores_suggest():
 
     return jsonify([{"code": s.qr_token, "name": s.name} for s in matches])
 
+@app.get("/api/stores/all")
+def api_stores_all():
+    """
+    Returns all stores for the mobile store picker.
+    Public (no auth). Only exposes store name + code.
+    """
+    stores = Store.query.order_by(Store.name.asc()).all()
+    return jsonify([{"code": s.qr_token, "name": s.name} for s in stores])
+
 # -----------------------------
 # ✅ Mobile identity + geofence endpoints (Option 2)
 # -----------------------------
