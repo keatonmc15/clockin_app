@@ -1120,6 +1120,132 @@ def api_mobile_clock_out():
         "human": minutes_to_human(minutes)
     })
 
+@app.post("/api/mobile/auto-exit-close")
+def api_mobile_auto_exit_close():
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
+    data = request.get_json(silent=True) or {}
+
+    pin = (data.get("pin") or "").strip()
+    lat = data.get("lat")
+    lon = data.get("lon")
+    accuracy_m = data.get("accuracy_m")
+    device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
+    device_label = _coerce_str(data.get("device_label"))
+
+    # optional: reason from app
+    reason = (data.get("reason") or "Auto-close after EXIT").strip()
+
+    if not pin or lat is None or lon is None:
+        return jsonify({"ok": False, "error": "missing_required_fields"}), 400
+
+    try:
+        lat = float(lat)
+        lon = float(lon)
+        if accuracy_m is not None:
+            accuracy_m = float(accuracy_m)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid_location"}), 400
+
+    emp = Employee.query.filter_by(pin=pin).first()
+    if not emp or not emp.active:
+        return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
+
+    # Open shift required
+    open_shift = (
+        Shift.query
+        .filter(Shift.employee_id == emp.id, Shift.clock_out.is_(None))
+        .order_by(Shift.clock_in.desc())
+        .first()
+    )
+    if not open_shift:
+        return jsonify({"ok": True, "already_closed": True, "message": "No open shift."}), 200
+
+    store = Store.query.get(open_shift.store_id)
+    if not store:
+        return jsonify({"ok": False, "error": "store_not_found"}), 500
+
+    # Distance check
+    dist_m = haversine_m(lat, lon, store.latitude, store.longitude)
+
+    # Accuracy gate (prevent bad GPS closing someone incorrectly)
+    # Match your validate-location gate style
+    if accuracy_m is not None and accuracy_m > 120:
+        return jsonify({
+            "ok": False,
+            "error": "accuracy_too_low",
+            "message": "GPS accuracy too low to auto-close. Try again.",
+            "accuracy_m": accuracy_m
+        }), 409
+
+    # Only allow auto-close if OUTSIDE radius (with a little buffer)
+    buffer_m = 15.0
+    if dist_m <= (store.geofence_radius_m + buffer_m):
+        return jsonify({
+            "ok": False,
+            "error": "still_inside_or_near_store",
+            "dist_m": float(dist_m),
+            "radius_m": float(store.geofence_radius_m),
+            "buffer_m": buffer_m
+        }), 409
+
+    # Touch employee device last-seen
+    _touch_employee_device(emp, device_uuid, device_label)
+
+    # Close shift as admin override
+    old_in = open_shift.clock_in
+    old_out = open_shift.clock_out
+
+    open_shift.clock_out = now_utc()
+    open_shift.clock_out_lat = lat
+    open_shift.clock_out_lng = lon
+    open_shift.clock_out_device_uuid = device_uuid
+
+    open_shift.closed_by_admin = True
+    open_shift.admin_closed_by = "AUTO_EXIT"
+    open_shift.admin_closed_at = now_utc()
+    open_shift.admin_close_reason = reason
+
+    audit = ShiftEditAudit(
+        shift_id=open_shift.id,
+        action="auto_exit_close",
+        editor="AUTO_EXIT",
+        reason=reason,
+        old_clock_in=old_in,
+        old_clock_out=old_out,
+        new_clock_in=open_shift.clock_in,
+        new_clock_out=open_shift.clock_out
+    )
+    db.session.add(audit)
+    db.session.commit()
+
+    log_event(
+        "AUTO_EXIT_CLOSE_OK",
+        employee_id=emp.id,
+        shift_id=open_shift.id,
+        store_id=store.id,
+        dist_m=round(dist_m, 1),
+        radius_m=store.geofence_radius_m,
+        accuracy_m=accuracy_m if accuracy_m is not None else "",
+        device_uuid=device_uuid or "",
+    )
+
+    mins = shift_minutes(open_shift)
+
+    return jsonify({
+        "ok": True,
+        "shift_id": open_shift.id,
+        "store_name": store.name,
+        "dist_m": round(dist_m, 1),
+        "minutes": mins,
+        "human": minutes_to_human(mins),
+        "clock_out_utc": open_shift.clock_out.isoformat() + "Z",
+        "message": "Shift auto-closed after EXIT."
+    }), 200
+
 @app.post("/api/mobile/geofences")
 def api_mobile_geofences():
     """
