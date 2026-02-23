@@ -1358,6 +1358,30 @@ def api_mobile_bg_event():
 
     return jsonify({"ok": True, "id": evt.id})
 
+@app.post("/api/mobile/report-issue")
+def api_mobile_report_issue():
+    data = request.get_json(silent=True) or {}
+
+    # Minimal validation
+    pin = (data.get("pin") or "").strip()
+    if not pin:
+        return jsonify({"ok": False, "error": "Missing PIN"}), 400
+
+    # If you already have a helper to authenticate employee by pin, use that here.
+    # For now, assume you have Employee model and can look it up:
+    emp = Employee.query.filter_by(pin=pin).first()
+    if not emp:
+        return jsonify({"ok": False, "error": "Invalid PIN"}), 401
+
+    # Store issue somewhere. Easiest: log it + return ok.
+    # Better: create a DB table MobileIssueReport and save it.
+    msg = (data.get("message") or "").strip()
+    payload = data.get("payload") or {}
+
+    app.logger.warning(f"[MOBILE ISSUE] emp={emp.id} {emp.name} msg={msg} payload={payload}")
+
+    return jsonify({"ok": True})
+
 @app.post("/api/mobile/bg/locations")
 def api_mobile_bg_locations_bulk():
     """
