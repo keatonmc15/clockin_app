@@ -260,27 +260,6 @@ class MobileEvent(db.Model):
 
     raw_json = db.Column(db.Text, nullable=False)
 
-# ✅ NEW: Mobile Issue Reports (Option B-safe: new table)
-class MobileIssueReport(db.Model):
-    __tablename__ = "mobile_issue_reports"
-    id = db.Column(db.Integer, primary_key=True)
-
-    employee_id = db.Column(db.Integer, db.ForeignKey("employees.id"), nullable=True)
-    employee_name = db.Column(db.String(120), nullable=True)
-    employee_pin = db.Column(db.String(20), nullable=True)
-
-    store_code = db.Column(db.String(120), nullable=True)
-    store_name = db.Column(db.String(120), nullable=True)
-
-    message = db.Column(db.Text, nullable=True)
-
-    # Store full payload for debugging (JSON string)
-    payload_json = db.Column(db.Text, nullable=False, default="{}")
-
-    created_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
-
-    employee = db.relationship("Employee")
-
 class MobileIssueReport(db.Model):
     __tablename__ = "mobile_issue_reports"
     id = db.Column(db.Integer, primary_key=True)
@@ -2163,6 +2142,77 @@ def admin_mobile_events():
         event=event_type,
         device=device_uuid,
     )
+
+@app.get("/admin/issues")
+def admin_issues():
+    guard = admin_guard()
+    if guard:
+        return guard
+
+    status = (request.args.get("status") or "open").strip().lower()
+    q = MobileIssueReport.query
+
+    if status in ("open", "resolved", "ignored"):
+        q = q.filter(MobileIssueReport.status == status)
+
+    issues = q.order_by(MobileIssueReport.created_at.desc()).limit(500).all()
+
+    return render_template(
+        "admin_issues.html",
+        issues=issues,
+        status=status,
+    )
+
+
+@app.get("/admin/issues/<int:issue_id>")
+def admin_issue_detail(issue_id: int):
+    guard = admin_guard()
+    if guard:
+        return guard
+
+    issue = MobileIssueReport.query.get(issue_id)
+    if not issue:
+        flash("Issue not found.", "error")
+        return redirect(url_for("admin_issues"))
+
+    # Pretty payload for template
+    payload_pretty = issue.payload_json
+    try:
+        payload_pretty = json.dumps(json.loads(issue.payload_json), indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+    return render_template(
+        "admin_issue_detail.html",
+        issue=issue,
+        payload_pretty=payload_pretty,
+    )
+
+@app.post("/admin/issues/<int:issue_id>/resolve")
+def admin_issue_resolve(issue_id: int):
+    guard = admin_guard()
+    if guard:
+        return guard
+
+    issue = MobileIssueReport.query.get(issue_id)
+    if not issue:
+        flash("Issue not found.", "error")
+        return redirect(url_for("admin_issues"))
+
+    new_status = (request.form.get("status") or "resolved").strip().lower()
+    note = (request.form.get("note") or "").strip()
+
+    if new_status not in ("open", "resolved", "ignored"):
+        new_status = "resolved"
+
+    issue.status = new_status
+    issue.resolve_note = note or None
+    issue.resolved_by = admin_username()
+    issue.resolved_at = now_utc() if new_status in ("resolved", "ignored") else None
+
+    db.session.commit()
+    flash("Issue updated.", "success")
+    return redirect(url_for("admin_issue_detail", issue_id=issue.id))
 
 # -------- Bulk Import (stores + employees) --------
 @app.route("/admin/import", methods=["GET", "POST"])
