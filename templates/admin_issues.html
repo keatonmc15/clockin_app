@@ -6,45 +6,83 @@
   <select name="status">
     <option value="open" {% if status=='open' %}selected{% endif %}>Open</option>
     <option value="resolved" {% if status=='resolved' %}selected{% endif %}>Resolved</option>
+    <option value="ignored" {% if status=='ignored' %}selected{% endif %}>Ignored</option>
     <option value="all" {% if status=='all' %}selected{% endif %}>All</option>
   </select>
 
-  <input type="text" name="q" value="{{ q }}" placeholder="Search name, store, message..." style="min-width:280px;">
+  <input
+    type="text"
+    name="q"
+    value="{{ q|default('') }}"
+    placeholder="Search name, store, message..."
+    style="min-width:280px;"
+  >
   <button type="submit">Filter</button>
 </form>
 
 <table style="width:100%; border-collapse:collapse;">
   <thead>
     <tr>
-      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">When (UTC)</th>
+      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">When</th>
       <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Employee</th>
       <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Store</th>
       <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Message</th>
-      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Device</th>
       <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Status</th>
       <th style="padding:8px; border-bottom:1px solid #ddd;"></th>
     </tr>
   </thead>
   <tbody>
   {% for i in issues %}
+    {# --- Status normalization (supports either i.status OR i.resolved boolean) --- #}
+    {% set st = (i.status if i.status is defined and i.status else ('resolved' if (i.resolved if i.resolved is defined else false) else 'open')) %}
+
     <tr>
-      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ i.created_utc }}</td>
-      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ i.employee_name or "Unknown" }}</td>
       <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
-        {{ i.store_name or "—" }}{% if i.store_code %} ({{ i.store_code }}){% endif %}
+        {# Prefer fmt_dt helper if present; fallback to raw #}
+        {% if i.created_at is defined and i.created_at %}
+          {{ fmt_dt(i.created_at) }}
+        {% elif i.created_utc is defined %}
+          {{ i.created_utc }}
+        {% else %}
+          —
+        {% endif %}
       </td>
+
       <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
-        <a href="/admin/issues/{{ i.id }}">{{ (i.message or "—")[:60] }}{% if i.message and i.message|length > 60 %}…{% endif %}</a>
+        {{ i.employee_name if i.employee_name is defined and i.employee_name else (i.employee.name if i.employee is defined and i.employee else "Unknown") }}
       </td>
+
       <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
-        {{ i.device_brand or "" }} {{ i.device_model or "" }}{% if i.platform %} ({{ i.platform }}){% endif %}
+        {# Works whether you stored store_name/store_code or have relationships #}
+        {% set sn = (i.store_name if i.store_name is defined else (i.store.name if i.store is defined and i.store else None)) %}
+        {% set sc = (i.store_code if i.store_code is defined else (i.store.qr_token if i.store is defined and i.store else None)) %}
+        {{ sn or "—" }}{% if sc %} ({{ sc }}){% endif %}
       </td>
+
       <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
-        {% if i.resolved %}✅ Resolved{% else %}🟠 Open{% endif %}
+        <a href="/admin/issues/{{ i.id }}">
+          {{ (i.message or "—")[:60] }}{% if i.message and i.message|length > 60 %}…{% endif %}
+        </a>
       </td>
+
+      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+        {% if st == 'resolved' %}
+          ✅ Resolved
+        {% elif st == 'ignored' %}
+          ⚪ Ignored
+        {% else %}
+          🟠 Open
+        {% endif %}
+      </td>
+
       <td style="padding:8px; border-bottom:1px solid #f0f0f0; text-align:right;">
+        {# Keep your toggle action if your route exists #}
         <form method="post" action="/admin/issues/{{ i.id }}/toggle" style="display:inline;">
-          <button type="submit">{% if i.resolved %}Mark Open{% else %}Resolve{% endif %}</button>
+          {% if st == 'resolved' %}
+            <button type="submit">Mark Open</button>
+          {% else %}
+            <button type="submit">Resolve</button>
+          {% endif %}
         </form>
       </td>
     </tr>
@@ -52,13 +90,33 @@
   </tbody>
 </table>
 
-<div style="margin-top:12px; display:flex; gap:10px; align-items:center;">
-  {% if pagination.has_prev %}
-    <a href="/admin/issues?page={{ pagination.prev_num }}&status={{ status }}&q={{ q }}">← Prev</a>
-  {% endif %}
-  <span>Page {{ pagination.page }} / {{ pagination.pages or 1 }}</span>
-  {% if pagination.has_next %}
-    <a href="/admin/issues?page={{ pagination.next_num }}&status={{ status }}&q={{ q }}">Next →</a>
-  {% endif %}
-</div>
+{# ---- Pagination (SAFE) ---- #}
+{% if pagination is defined and pagination %}
+  {% set qv = q|default('') %}
+  <div style="margin-top:12px; display:flex; gap:10px; align-items:center;">
+    {# Support either dict pagination OR paginate() object #}
+
+    {% if pagination.has_prev is defined %}
+      {# dict style (our recommended) #}
+      {% if pagination.has_prev %}
+        <a href="/admin/issues?page={{ pagination.page - 1 }}&status={{ status }}&q={{ qv }}">← Prev</a>
+      {% endif %}
+      <span>Page {{ pagination.page }}</span>
+      {% if pagination.has_next %}
+        <a href="/admin/issues?page={{ pagination.page + 1 }}&status={{ status }}&q={{ qv }}">Next →</a>
+      {% endif %}
+
+    {% elif pagination.prev_num is defined %}
+      {# Flask paginate() object style #}
+      {% if pagination.has_prev %}
+        <a href="/admin/issues?page={{ pagination.prev_num }}&status={{ status }}&q={{ qv }}">← Prev</a>
+      {% endif %}
+      <span>Page {{ pagination.page }} / {{ pagination.pages or 1 }}</span>
+      {% if pagination.has_next %}
+        <a href="/admin/issues?page={{ pagination.next_num }}&status={{ status }}&q={{ qv }}">Next →</a>
+      {% endif %}
+    {% endif %}
+  </div>
+{% endif %}
+
 {% endblock %}
