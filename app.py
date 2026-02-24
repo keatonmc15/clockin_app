@@ -1984,6 +1984,40 @@ def admin_issues():
         limit=limit,
     )
 
+@app.post("/admin/issues/<int:issue_id>/set-status")
+def admin_issue_set_status(issue_id: int):
+    guard = admin_guard()
+    if guard:
+        return guard
+
+    new_status = (request.form.get("status") or "").strip().lower()
+    if new_status not in ("open", "resolved", "ignored"):
+        flash("Invalid status.", "error")
+        return redirect(url_for("admin_issues"))
+
+    issue = MobileIssueReport.query.get(issue_id)
+    if not issue:
+        flash("Issue not found.", "error")
+        return redirect(url_for("admin_issues"))
+
+    issue.status = new_status
+
+    if new_status == "resolved":
+        issue.resolved_by = admin_username()
+        issue.resolved_at = now_utc()
+        # optional note
+        note = (request.form.get("note") or "").strip()
+        if note:
+            issue.resolve_note = note
+    else:
+        issue.resolved_by = None
+        issue.resolved_at = None
+        issue.resolve_note = None
+
+    db.session.commit()
+    flash(f"Issue set to {new_status}.", "success")
+    return redirect(request.referrer or url_for("admin_issues"))
+
 # ✅ Admin GPS Ping Viewer
 @app.get("/admin/pings")
 def admin_pings():
