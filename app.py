@@ -1950,50 +1950,38 @@ def admin_dashboard():
         shifts_7d=shifts_7d,
     )
 
-# ✅ NEW: Admin Issues List
+# ✅ Admin Issues List
 @app.get("/admin/issues")
 def admin_issues():
     guard = admin_guard()
     if guard:
         return guard
 
+    status = (request.args.get("status") or "open").strip().lower()
+    limit_raw = (request.args.get("limit") or "").strip()
+
+    # limit: 25..500 (default 200)
     try:
-        limit = int(request.args.get("limit", "200"))
+        limit = int(limit_raw) if limit_raw else 200
     except ValueError:
         limit = 200
     limit = max(25, min(limit, 500))
 
-    q = MobileIssueReport.query.order_by(MobileIssueReport.created_at.desc()).limit(limit)
-    issues = q.all()
+    q = MobileIssueReport.query
+
+    if status in ("open", "resolved", "ignored"):
+        q = q.filter(MobileIssueReport.status == status)
+    else:
+        status = "open"
+        q = q.filter(MobileIssueReport.status == status)
+
+    issues = q.order_by(MobileIssueReport.created_at.desc()).limit(limit).all()
 
     return render_template(
         "admin_issues.html",
         issues=issues,
+        status=status,
         limit=limit,
-    )
-
-# ✅ NEW: Admin Issue Detail
-@app.get("/admin/issues/<int:issue_id>")
-def admin_issue_detail(issue_id: int):
-    guard = admin_guard()
-    if guard:
-        return guard
-
-    issue = MobileIssueReport.query.get(issue_id)
-    if not issue:
-        flash("Issue not found.", "error")
-        return redirect(url_for("admin_issues"))
-
-    payload_pretty = ""
-    try:
-        payload_pretty = json.dumps(json.loads(issue.payload_json or "{}"), indent=2, ensure_ascii=False)
-    except Exception:
-        payload_pretty = issue.payload_json or ""
-
-    return render_template(
-        "admin_issue_detail.html",
-        issue=issue,
-        payload_pretty=payload_pretty,
     )
 
 # ✅ Admin GPS Ping Viewer
@@ -2142,27 +2130,6 @@ def admin_mobile_events():
         event=event_type,
         device=device_uuid,
     )
-
-@app.get("/admin/issues")
-def admin_issues():
-    guard = admin_guard()
-    if guard:
-        return guard
-
-    status = (request.args.get("status") or "open").strip().lower()
-    q = MobileIssueReport.query
-
-    if status in ("open", "resolved", "ignored"):
-        q = q.filter(MobileIssueReport.status == status)
-
-    issues = q.order_by(MobileIssueReport.created_at.desc()).limit(500).all()
-
-    return render_template(
-        "admin_issues.html",
-        issues=issues,
-        status=status,
-    )
-
 
 @app.get("/admin/issues/<int:issue_id>")
 def admin_issue_detail(issue_id: int):
