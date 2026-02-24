@@ -2018,6 +2018,43 @@ def admin_issue_set_status(issue_id: int):
     flash(f"Issue set to {new_status}.", "success")
     return redirect(request.referrer or url_for("admin_issues"))
 
+from datetime import datetime
+
+@app.post("/admin/issues/<int:issue_id>/toggle")
+def admin_issue_toggle(issue_id: int):
+    guard = admin_guard()
+    if guard:
+        return guard
+
+    issue = MobileIssueReport.query.get(issue_id)
+    if not issue:
+        flash("Issue not found.", "error")
+        return redirect(url_for("admin_issues"))
+
+    # Toggle: open <-> resolved
+    current = (issue.status or "open").strip().lower()
+
+    if current == "resolved":
+        issue.status = "open"
+        issue.resolved_by = None
+        issue.resolved_at = None
+        issue.resolve_note = None
+        flash("Marked issue as OPEN.", "success")
+    else:
+        issue.status = "resolved"
+        issue.resolved_by = admin_username()
+        issue.resolved_at = now_utc()
+        flash("Resolved issue.", "success")
+
+    db.session.commit()
+
+    # Keep filters when returning
+    status = (request.args.get("status") or "").strip()
+    q = (request.args.get("q") or "").strip()
+    page = (request.args.get("page") or "").strip()
+
+    return redirect(url_for("admin_issues", status=status or None, q=q or None, page=page or None))
+
 # ✅ Admin GPS Ping Viewer
 @app.get("/admin/pings")
 def admin_pings():
