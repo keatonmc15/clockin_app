@@ -1,0 +1,24 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Issue #{{ issue.id }}</h2>
+
+<p><b>Created (UTC):</b> {{ issue.created_utc }}</p>
+<p><b>Employee:</b> {{ issue.employee_name or "Unknown" }}</p>
+<p><b>Store:</b> {{ issue.store_name or "—" }}{% if issue.store_code %} ({{ issue.store_code }}){% endif %}</p>
+<p><b>Clocked In:</b> {{ "YES" if issue.is_clocked_in else "NO" }}</p>
+<p><b>GPS Enabled:</b> {{ "YES" if issue.gps_enabled else "NO" }}</p>
+<p><b>Device:</b> {{ issue.device_brand or "" }} {{ issue.device_model or "" }}{% if issue.platform %} ({{ issue.platform }}){% endif %}</p>
+
+<hr>
+
+<h3>Message</h3>
+<pre style="white-space:pre-wrap;">{{ issue.message or "" }}</pre>
+
+<h3>Payload</h3>
+<pre style="white-space:pre-wrap;">{{ payload | tojson(indent=2) }}</pre>
+
+<form method="post" action="/admin/issues/{{ issue.id }}/toggle" style="margin-top:10px;">
+  <button type="submit">{% if issue.resolved %}Mark Open{% else %}Resolve{% endif %}</button>
+  <a href="/admin/issues" style="margin-left:10px;">Back to list</a>
+</form>
+{% endblock %}

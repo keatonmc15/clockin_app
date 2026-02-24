@@ -260,6 +260,49 @@ class MobileEvent(db.Model):
 
     raw_json = db.Column(db.Text, nullable=False)
 
+# ✅ NEW: Mobile Issue Reports (Option B-safe: new table)
+class MobileIssueReport(db.Model):
+    __tablename__ = "mobile_issue_reports"
+    id = db.Column(db.Integer, primary_key=True)
+
+    employee_id = db.Column(db.Integer, db.ForeignKey("employees.id"), nullable=True)
+    employee_name = db.Column(db.String(120), nullable=True)
+    employee_pin = db.Column(db.String(20), nullable=True)
+
+    store_code = db.Column(db.String(120), nullable=True)
+    store_name = db.Column(db.String(120), nullable=True)
+
+    message = db.Column(db.Text, nullable=True)
+
+    # Store full payload for debugging (JSON string)
+    payload_json = db.Column(db.Text, nullable=False, default="{}")
+
+    created_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
+
+    employee = db.relationship("Employee")
+
+class MobileIssueReport(db.Model):
+    __tablename__ = "mobile_issue_reports"
+    id = db.Column(db.Integer, primary_key=True)
+
+    employee_id = db.Column(db.Integer, db.ForeignKey("employees.id"), nullable=True)
+    store_id = db.Column(db.Integer, db.ForeignKey("stores.id"), nullable=True)
+    shift_id = db.Column(db.Integer, db.ForeignKey("shifts.id"), nullable=True)
+
+    message = db.Column(db.Text, nullable=True)
+    payload_json = db.Column(db.Text, nullable=False, default="{}")
+
+    status = db.Column(db.String(30), nullable=False, default="open")  # open / resolved / ignored
+    resolved_by = db.Column(db.String(120), nullable=True)
+    resolved_at = db.Column(db.DateTime, nullable=True)
+    resolve_note = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
+
+    employee = db.relationship("Employee")
+    store = db.relationship("Store")
+    shift = db.relationship("Shift")
+
 # -----------------------------
 # Geo Helpers
 # -----------------------------
@@ -1360,27 +1403,75 @@ def api_mobile_bg_event():
 
 @app.post("/api/mobile/report-issue")
 def api_mobile_report_issue():
+    ok, err = _require_mobile_auth()
+    if not ok:
+        msg, code = err
+        return jsonify({"ok": False, "error": msg}), code
+
     data = request.get_json(silent=True) or {}
 
-    # Minimal validation
     pin = (data.get("pin") or "").strip()
     if not pin:
-        return jsonify({"ok": False, "error": "Missing PIN"}), 400
+        return jsonify({"ok": False, "error": "missing_pin"}), 400
 
-    # If you already have a helper to authenticate employee by pin, use that here.
-    # For now, assume you have Employee model and can look it up:
     emp = Employee.query.filter_by(pin=pin).first()
-    if not emp:
-        return jsonify({"ok": False, "error": "Invalid PIN"}), 401
+    if not emp or not emp.active:
+        return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
-    # Store issue somewhere. Easiest: log it + return ok.
-    # Better: create a DB table MobileIssueReport and save it.
-    msg = (data.get("message") or "").strip()
+    msg = (data.get("message") or "").strip() or None
     payload = data.get("payload") or {}
+    if not isinstance(payload, dict):
+        payload = {"_raw": payload}
 
-    app.logger.warning(f"[MOBILE ISSUE] emp={emp.id} {emp.name} msg={msg} payload={payload}")
+    # Try to attach store_id / shift_id if possible
+    store_id = None
+    shift_id = None
 
-    return jsonify({"ok": True})
+    try:
+        store_obj = payload.get("store") if isinstance(payload.get("store"), dict) else {}
+        store_code = normalize_store_code(store_obj.get("code") or "")
+        if store_code:
+            s = Store.query.filter(func.lower(Store.qr_token) == store_code).first()
+            if s:
+                store_id = s.id
+    except Exception:
+        pass
+
+    try:
+        open_shift = (
+            Shift.query
+            .filter(Shift.employee_id == emp.id, Shift.clock_out.is_(None))
+            .order_by(Shift.clock_in.desc())
+            .first()
+        )
+        if open_shift:
+            shift_id = open_shift.id
+            if not store_id:
+                store_id = open_shift.store_id
+    except Exception:
+        pass
+
+    try:
+        report = MobileIssueReport(
+            employee_id=emp.id,
+            store_id=store_id,
+            shift_id=shift_id,
+            message=msg,
+            payload_json=_safe_json_dumps(payload),
+            status="open",
+            created_at=now_utc(),
+        )
+        db.session.add(report)
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("MOBILE_ISSUE_SAVE_FAILED")
+        return jsonify({"ok": False, "error": "db_error"}), 500
+
+    # Optional log line
+    app.logger.warning(f"[MOBILE ISSUE] id={report.id} emp={emp.id} {emp.name} store_id={store_id} shift_id={shift_id}")
+
+    return jsonify({"ok": True, "id": report.id})
 
 @app.post("/api/mobile/bg/locations")
 def api_mobile_bg_locations_bulk():
@@ -1878,6 +1969,52 @@ def admin_dashboard():
         open_shifts=open_shifts,
         stores=stores,
         shifts_7d=shifts_7d,
+    )
+
+# ✅ NEW: Admin Issues List
+@app.get("/admin/issues")
+def admin_issues():
+    guard = admin_guard()
+    if guard:
+        return guard
+
+    try:
+        limit = int(request.args.get("limit", "200"))
+    except ValueError:
+        limit = 200
+    limit = max(25, min(limit, 500))
+
+    q = MobileIssueReport.query.order_by(MobileIssueReport.created_at.desc()).limit(limit)
+    issues = q.all()
+
+    return render_template(
+        "admin_issues.html",
+        issues=issues,
+        limit=limit,
+    )
+
+# ✅ NEW: Admin Issue Detail
+@app.get("/admin/issues/<int:issue_id>")
+def admin_issue_detail(issue_id: int):
+    guard = admin_guard()
+    if guard:
+        return guard
+
+    issue = MobileIssueReport.query.get(issue_id)
+    if not issue:
+        flash("Issue not found.", "error")
+        return redirect(url_for("admin_issues"))
+
+    payload_pretty = ""
+    try:
+        payload_pretty = json.dumps(json.loads(issue.payload_json or "{}"), indent=2, ensure_ascii=False)
+    except Exception:
+        payload_pretty = issue.payload_json or ""
+
+    return render_template(
+        "admin_issue_detail.html",
+        issue=issue,
+        payload_pretty=payload_pretty,
     )
 
 # ✅ Admin GPS Ping Viewer

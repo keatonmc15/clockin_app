@@ -1,0 +1,64 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Mobile Issue Reports</h2>
+
+<form method="get" action="/admin/issues" style="margin: 10px 0; display:flex; gap:10px; flex-wrap:wrap;">
+  <select name="status">
+    <option value="open" {% if status=='open' %}selected{% endif %}>Open</option>
+    <option value="resolved" {% if status=='resolved' %}selected{% endif %}>Resolved</option>
+    <option value="all" {% if status=='all' %}selected{% endif %}>All</option>
+  </select>
+
+  <input type="text" name="q" value="{{ q }}" placeholder="Search name, store, message..." style="min-width:280px;">
+  <button type="submit">Filter</button>
+</form>
+
+<table style="width:100%; border-collapse:collapse;">
+  <thead>
+    <tr>
+      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">When (UTC)</th>
+      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Employee</th>
+      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Store</th>
+      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Message</th>
+      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Device</th>
+      <th style="text-align:left; padding:8px; border-bottom:1px solid #ddd;">Status</th>
+      <th style="padding:8px; border-bottom:1px solid #ddd;"></th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for i in issues %}
+    <tr>
+      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ i.created_utc }}</td>
+      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">{{ i.employee_name or "Unknown" }}</td>
+      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+        {{ i.store_name or "—" }}{% if i.store_code %} ({{ i.store_code }}){% endif %}
+      </td>
+      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+        <a href="/admin/issues/{{ i.id }}">{{ (i.message or "—")[:60] }}{% if i.message and i.message|length > 60 %}…{% endif %}</a>
+      </td>
+      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+        {{ i.device_brand or "" }} {{ i.device_model or "" }}{% if i.platform %} ({{ i.platform }}){% endif %}
+      </td>
+      <td style="padding:8px; border-bottom:1px solid #f0f0f0;">
+        {% if i.resolved %}✅ Resolved{% else %}🟠 Open{% endif %}
+      </td>
+      <td style="padding:8px; border-bottom:1px solid #f0f0f0; text-align:right;">
+        <form method="post" action="/admin/issues/{{ i.id }}/toggle" style="display:inline;">
+          <button type="submit">{% if i.resolved %}Mark Open{% else %}Resolve{% endif %}</button>
+        </form>
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+
+<div style="margin-top:12px; display:flex; gap:10px; align-items:center;">
+  {% if pagination.has_prev %}
+    <a href="/admin/issues?page={{ pagination.prev_num }}&status={{ status }}&q={{ q }}">← Prev</a>
+  {% endif %}
+  <span>Page {{ pagination.page }} / {{ pagination.pages or 1 }}</span>
+  {% if pagination.has_next %}
+    <a href="/admin/issues?page={{ pagination.next_num }}&status={{ status }}&q={{ q }}">Next →</a>
+  {% endif %}
+</div>
+{% endblock %}
