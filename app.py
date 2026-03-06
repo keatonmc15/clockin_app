@@ -2202,6 +2202,12 @@ def admin_mobile_events():
         device=device_uuid,
     )
 
+from flask import render_template
+
+@app.get("/privacy")
+def privacy_policy():
+    return render_template("privacy.html")
+
 @app.get("/admin/issues/<int:issue_id>")
 def admin_issue_detail(issue_id: int):
     guard = admin_guard()
