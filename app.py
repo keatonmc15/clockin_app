@@ -1926,28 +1926,72 @@ def admin_logout():
 # -----------------------------
 # Admin Pages
 # -----------------------------
+
 @app.get("/admin")
 def admin_dashboard():
     guard = admin_guard()
-    if guard: return guard
+    if guard:
+        return guard
 
     total_employees = Employee.query.count()
     active_employees = Employee.query.filter_by(active=True).count()
     inactive_employees = Employee.query.filter_by(active=False).count()
 
-    open_shifts = Shift.query.filter_by(clock_out=None).count()
     stores = Store.query.count()
     last7 = now_utc() - timedelta(days=7)
     shifts_7d = Shift.query.filter(Shift.clock_in >= last7).count()
+
+    # ✅ Open shifts (currently clocked in)
+    open_shifts = (
+        Shift.query
+        .filter(Shift.clock_out.is_(None))
+        .order_by(Shift.clock_in.desc())
+        .all()
+    )
+
+    open_shift_rows = []
+    for s in open_shifts:
+        mins = int((now_utc() - s.clock_in).total_seconds() // 60) if s.clock_in else 0
+
+        if mins >= 600:
+            color = "#dc2626"
+        elif mins >= 480:
+            color = "#d97706"
+        else:
+            color = "#16a34a"
+
+        open_shift_rows.append({
+            "employee_name": s.employee.name if s.employee else "Unknown",
+            "store_name": s.store.name if s.store else "Unknown",
+            "clock_in": s.clock_in,
+            "human": minutes_to_human(mins),
+            "status_color": color,
+        })
+
+    # ✅ Recent activity (SAFE version)
+    recent_shifts = (
+        Shift.query
+        .order_by(Shift.clock_in.desc())  # safer than created_at
+        .limit(10)
+        .all()
+    )
+
+    # ✅ Issues count
+    open_issues_count = MobileIssueReport.query.filter(
+        MobileIssueReport.status == "open"
+    ).count()
 
     return render_template(
         "admin.html",
         total_employees=total_employees,
         active_employees=active_employees,
         inactive_employees=inactive_employees,
-        open_shifts=open_shifts,
         stores=stores,
         shifts_7d=shifts_7d,
+        open_shift_rows=open_shift_rows,
+        open_shift_count=len(open_shifts),
+        recent_shifts=recent_shifts,
+        open_issues_count=open_issues_count,
     )
 
 # ✅ Admin Issues List
@@ -2679,72 +2723,17 @@ def admin_stores_delete():
     flash("Store deleted.", "success")
     return redirect(url_for("admin_stores"))
 
-@app.get("/admin")
-def admin_dashboard():
+@app.get("/admin/shifts")
+def admin_shifts():
     guard = admin_guard()
-    if guard:
-        return guard
+    if guard: return guard
 
-    total_employees = Employee.query.count()
-    active_employees = Employee.query.filter_by(active=True).count()
-    inactive_employees = Employee.query.filter_by(active=False).count()
+    shifts = Shift.query.order_by(
+        Shift.clock_out.is_(None).desc(),
+        Shift.clock_in.desc()
+    ).limit(300).all()
 
-    stores = Store.query.count()
-    last7 = now_utc() - timedelta(days=7)
-    shifts_7d = Shift.query.filter(Shift.clock_in >= last7).count()
-
-    # ✅ Open shifts (currently clocked in)
-    open_shifts = (
-        Shift.query
-        .filter(Shift.clock_out.is_(None))
-        .order_by(Shift.clock_in.desc())
-        .all()
-    )
-
-    open_shift_rows = []
-    for s in open_shifts:
-        mins = int((now_utc() - s.clock_in).total_seconds() // 60) if s.clock_in else 0
-
-        if mins >= 600:
-            color = "#dc2626"
-        elif mins >= 480:
-            color = "#d97706"
-        else:
-            color = "#16a34a"
-
-        open_shift_rows.append({
-            "employee_name": s.employee.name if s.employee else "Unknown",
-            "store_name": s.store.name if s.store else "Unknown",
-            "clock_in": s.clock_in,
-            "human": minutes_to_human(mins),
-            "status_color": color,
-        })
-
-    # ✅ Recent activity (SAFE version)
-    recent_shifts = (
-        Shift.query
-        .order_by(Shift.clock_in.desc())  # safer than created_at
-        .limit(10)
-        .all()
-    )
-
-    # ✅ Issues count
-    open_issues_count = MobileIssueReport.query.filter(
-        MobileIssueReport.status == "open"
-    ).count()
-
-    return render_template(
-        "admin.html",
-        total_employees=total_employees,
-        active_employees=active_employees,
-        inactive_employees=inactive_employees,
-        stores=stores,
-        shifts_7d=shifts_7d,
-        open_shift_rows=open_shift_rows,
-        open_shift_count=len(open_shifts),
-        recent_shifts=recent_shifts,
-        open_issues_count=open_issues_count,
-    )
+    return render_template("shifts.html", shifts=shifts)
 
 @app.post("/admin/shifts/close")
 def admin_close_shift():
