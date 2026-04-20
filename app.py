@@ -1936,12 +1936,14 @@ def admin_dashboard():
     total_employees = Employee.query.count()
     active_employees = Employee.query.filter_by(active=True).count()
     inactive_employees = Employee.query.filter_by(active=False).count()
-
     stores = Store.query.count()
+
     last7 = now_utc() - timedelta(days=7)
     shifts_7d = Shift.query.filter(Shift.clock_in >= last7).count()
 
-    # ✅ Open shifts (currently clocked in)
+    # -----------------------------
+    # Open shifts
+    # -----------------------------
     open_shifts = (
         Shift.query
         .filter(Shift.clock_out.is_(None))
@@ -1949,34 +1951,81 @@ def admin_dashboard():
         .all()
     )
 
+    open_shift_count = len(open_shifts)
+
     open_shift_rows = []
+    longest_open_shift_rows = []
+    outside_geofence_rows = []
+
     for s in open_shifts:
         mins = int((now_utc() - s.clock_in).total_seconds() // 60) if s.clock_in else 0
 
         if mins >= 600:
-            color = "#dc2626"
+            color = "#dc2626"   # red
         elif mins >= 480:
-            color = "#d97706"
+            color = "#d97706"   # amber
         else:
-            color = "#16a34a"
+            color = "#16a34a"   # green
 
-        open_shift_rows.append({
+        row = {
+            "shift_id": s.id,
             "employee_name": s.employee.name if s.employee else "Unknown",
             "store_name": s.store.name if s.store else "Unknown",
             "clock_in": s.clock_in,
+            "minutes": mins,
             "human": minutes_to_human(mins),
             "status_color": color,
-        })
+        }
 
-    # ✅ Recent activity (SAFE version)
+        open_shift_rows.append(row)
+        longest_open_shift_rows.append(row)
+
+        # Most recent ping for this open shift
+        last_ping = (
+            LocationPing.query
+            .filter(LocationPing.shift_id == s.id)
+            .order_by(LocationPing.created_at.desc())
+            .first()
+        )
+
+        if last_ping and not last_ping.inside_radius:
+            outside_geofence_rows.append({
+                "employee_name": s.employee.name if s.employee else "Unknown",
+                "store_name": s.store.name if s.store else "Unknown",
+                "dist_m": round(last_ping.dist_m, 1) if last_ping.dist_m is not None else None,
+                "ping_at": last_ping.created_at,
+                "minutes": mins,
+                "human": minutes_to_human(mins),
+            })
+
+    # Sort longest shifts first
+    longest_open_shift_rows = sorted(
+        longest_open_shift_rows,
+        key=lambda row: row["minutes"],
+        reverse=True
+    )
+
+    # Sort outside-geofence rows by farthest distance first
+    outside_geofence_rows = sorted(
+        outside_geofence_rows,
+        key=lambda row: (row["dist_m"] is None, -(row["dist_m"] or 0))
+    )
+
+    outside_geofence_count = len(outside_geofence_rows)
+
+    # -----------------------------
+    # Recent activity
+    # -----------------------------
     recent_shifts = (
         Shift.query
-        .order_by(Shift.clock_in.desc())  # safer than created_at
+        .order_by(Shift.clock_in.desc())
         .limit(10)
         .all()
     )
 
-    # ✅ Issues count
+    # -----------------------------
+    # Open issues
+    # -----------------------------
     open_issues_count = MobileIssueReport.query.filter(
         MobileIssueReport.status == "open"
     ).count()
@@ -1988,8 +2037,11 @@ def admin_dashboard():
         inactive_employees=inactive_employees,
         stores=stores,
         shifts_7d=shifts_7d,
+        open_shift_count=open_shift_count,
         open_shift_rows=open_shift_rows,
-        open_shift_count=len(open_shifts),
+        longest_open_shift_rows=longest_open_shift_rows,
+        outside_geofence_rows=outside_geofence_rows,
+        outside_geofence_count=outside_geofence_count,
         recent_shifts=recent_shifts,
         open_issues_count=open_issues_count,
     )

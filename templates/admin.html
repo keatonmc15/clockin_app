@@ -6,7 +6,7 @@
     <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
       <div>
         <div class="h1" style="margin-bottom:4px;">Dashboard</div>
-        <div class="muted">Live view of who is working, recent activity, and any open issues.</div>
+        <div class="muted">Live view of who is working, who may need attention, and recent activity.</div>
       </div>
 
       <div style="display:flex; gap:10px; flex-wrap:wrap;">
@@ -63,7 +63,7 @@
       {% endif %}
     </div>
 
-    <!-- Summary / Issues -->
+    <!-- Quick Summary -->
     <div class="card">
       <div class="h1" style="margin:0;">Quick Summary</div>
       <div class="muted">Important things that need attention.</div>
@@ -71,6 +71,13 @@
       <div style="height:16px;"></div>
 
       <div style="display:grid; gap:12px;">
+        <div style="padding:14px; border:1px solid #e5e7eb; border-radius:12px;">
+          <div class="muted" style="margin-bottom:4px;">Outside geofence</div>
+          <div style="font-size:28px; font-weight:800; color:{% if outside_geofence_count > 0 %}#dc2626{% else %}inherit{% endif %};">
+            {{ outside_geofence_count }}
+          </div>
+        </div>
+
         <div style="padding:14px; border:1px solid #e5e7eb; border-radius:12px;">
           <div class="muted" style="margin-bottom:4px;">Open issues</div>
           <div style="font-size:28px; font-weight:800;">{{ open_issues_count }}</div>
@@ -88,6 +95,87 @@
           </div>
         </div>
       </div>
+    </div>
+  </div>
+
+  <div style="height:14px;"></div>
+
+  <div class="grid grid-2">
+    <!-- Outside Geofence List -->
+    <div class="card">
+      <div class="h1" style="margin:0;">Employees Outside Geofence</div>
+      <div class="muted">Based on the most recent ping for each open shift.</div>
+
+      <div style="height:12px;"></div>
+
+      {% if outside_geofence_rows %}
+        <table>
+          <thead>
+            <tr>
+              <th style="min-width:170px;">Employee</th>
+              <th style="min-width:170px;">Store</th>
+              <th style="min-width:110px;">Distance</th>
+              <th style="min-width:160px;">Last Ping</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in outside_geofence_rows %}
+              <tr>
+                <td style="color:#dc2626; font-weight:700;">{{ row.employee_name }}</td>
+                <td>{{ row.store_name }}</td>
+                <td>
+                  {% if row.dist_m is not none %}
+                    {{ row.dist_m }} m
+                  {% else %}
+                    -
+                  {% endif %}
+                </td>
+                <td>{{ fmt_dt(row.ping_at) if row.ping_at else "-" }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div style="padding:12px 0;" class="muted">No currently clocked-in employees are outside the geofence.</div>
+      {% endif %}
+    </div>
+
+    <!-- Longest Open Shifts -->
+    <div class="card">
+      <div class="h1" style="margin:0;">Longest Open Shifts</div>
+      <div class="muted">Open shifts sorted from longest to shortest.</div>
+
+      <div style="height:12px;"></div>
+
+      {% if longest_open_shift_rows %}
+        <table>
+          <thead>
+            <tr>
+              <th style="min-width:170px;">Employee</th>
+              <th style="min-width:170px;">Store</th>
+              <th style="min-width:160px;">Clock In</th>
+              <th style="min-width:120px;">Time In</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in longest_open_shift_rows %}
+              <tr>
+                <td>
+                  <span style="display:inline-flex; align-items:center; gap:8px;">
+                    <span style="width:10px; height:10px; border-radius:999px; background:{{ row.status_color }}; display:inline-block;"></span>
+                    {{ row.employee_name }}
+                  </span>
+                </td>
+                <td>{{ row.store_name }}</td>
+                <td>{{ fmt_dt(row.clock_in) }}</td>
+                <td><b>{{ row.human }}</b></td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div style="padding:12px 0;" class="muted">No open shifts right now.</div>
+      {% endif %}
     </div>
   </div>
 
