@@ -4,7 +4,7 @@
 {% block content %}
   <div class="card">
     <div class="h1">Dashboard</div>
-    <div class="muted">Quick snapshot of your system.</div>
+    <div class="muted">Live snapshot of employees, shifts, and issues.</div>
   </div>
 
   <div style="height:14px;"></div>
@@ -14,10 +14,12 @@
       <div class="muted">Total employees</div>
       <div style="font-size:28px; font-weight:800;">{{ total_employees }}</div>
     </div>
+
     <div class="card">
       <div class="muted">Active employees</div>
       <div style="font-size:28px; font-weight:800;">{{ active_employees }}</div>
     </div>
+
     <div class="card">
       <div class="muted">Inactive employees</div>
       <div style="font-size:28px; font-weight:800;">{{ inactive_employees }}</div>
@@ -26,15 +28,145 @@
 
   <div style="height:14px;"></div>
 
-  <div class="card">
-    <div class="row">
-      <div>
-        <div class="h1" style="margin:0;">Next actions</div>
-        <div class="muted">Most common admin tasks.</div>
-      </div>
-      <div class="row">
-        <a class="btn btn-primary" href="/admin/employees">Manage employees</a>
-      </div>
+  <div class="grid grid-3">
+    <div class="card">
+      <div class="muted">Clocked in now</div>
+      <div style="font-size:28px; font-weight:800;">{{ open_shift_count }}</div>
     </div>
+
+    <div class="card">
+      <div class="muted">Stores</div>
+      <div style="font-size:28px; font-weight:800;">{{ stores }}</div>
+    </div>
+
+    <div class="card">
+      <div class="muted">Shifts last 7 days</div>
+      <div style="font-size:28px; font-weight:800;">{{ shifts_7d }}</div>
+    </div>
+  </div>
+
+  <div style="height:14px;"></div>
+
+  <div class="grid grid-2">
+    <!-- Currently Clocked In -->
+    <div class="card">
+      <div class="row" style="justify-content:space-between; align-items:center;">
+        <div>
+          <div class="h1" style="margin:0;">Currently Clocked In</div>
+          <div class="muted">Live open shifts.</div>
+        </div>
+        <a class="btn" href="{{ url_for('admin_shifts') }}">View shifts</a>
+      </div>
+
+      <div style="height:10px;"></div>
+
+      {% if open_shift_rows %}
+        <table>
+          <thead>
+            <tr>
+              <th style="min-width:180px;">Employee</th>
+              <th style="min-width:180px;">Store</th>
+              <th style="min-width:160px;">Clock In</th>
+              <th style="min-width:120px;">On Shift</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for row in open_shift_rows %}
+              <tr>
+                <td>
+                  <span style="display:inline-flex; align-items:center; gap:8px;">
+                    <span style="width:10px; height:10px; border-radius:999px; background:{{ row.status_color }}; display:inline-block;"></span>
+                    {{ row.employee_name }}
+                  </span>
+                </td>
+                <td>{{ row.store_name }}</td>
+                <td>{{ fmt_dt(row.clock_in) }}</td>
+                <td>{{ row.human }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      {% else %}
+        <div class="muted" style="padding:12px 0;">Nobody is currently clocked in.</div>
+      {% endif %}
+    </div>
+
+    <!-- Quick Actions / Issues -->
+    <div class="card">
+      <div class="h1" style="margin:0;">Quick Actions</div>
+      <div class="muted">Most common admin tasks.</div>
+
+      <div style="height:14px;"></div>
+
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <a class="btn btn-primary" href="{{ url_for('admin_employees') }}">Manage employees</a>
+        <a class="btn" href="{{ url_for('admin_stores') }}">Manage stores</a>
+        <a class="btn" href="{{ url_for('admin_shifts') }}">Manage shifts</a>
+        <a class="btn" href="{{ url_for('admin_payroll') }}">Payroll</a>
+      </div>
+
+      <div style="height:18px;"></div>
+
+      <div class="h1" style="margin:0;">Issues</div>
+      <div class="muted">Open employee-reported issues.</div>
+
+      <div style="height:10px;"></div>
+
+      <div style="font-size:28px; font-weight:800;">{{ open_issues_count }}</div>
+
+      <div style="height:10px;"></div>
+
+      <a class="btn {% if open_issues_count > 0 %}btn-danger{% endif %}" href="{{ url_for('admin_issues') }}">
+        View Issues
+      </a>
+    </div>
+  </div>
+
+  <div style="height:14px;"></div>
+
+  <!-- Recent Activity -->
+  <div class="card">
+    <div class="row" style="justify-content:space-between; align-items:center;">
+      <div>
+        <div class="h1" style="margin:0;">Recent Activity</div>
+        <div class="muted">Latest shift records.</div>
+      </div>
+      <a class="btn" href="{{ url_for('admin_shifts') }}">Open full shift list</a>
+    </div>
+
+    <div style="height:10px;"></div>
+
+    {% if recent_shifts %}
+      <table>
+        <thead>
+          <tr>
+            <th style="min-width:180px;">Employee</th>
+            <th style="min-width:180px;">Store</th>
+            <th style="min-width:160px;">Clock In</th>
+            <th style="min-width:160px;">Clock Out</th>
+            <th style="min-width:120px;">Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in recent_shifts %}
+            <tr>
+              <td>{{ s.employee.name if s.employee else "Unknown" }}</td>
+              <td>{{ s.store.name if s.store else "Unknown" }}</td>
+              <td>{{ fmt_dt(s.clock_in) if s.clock_in else "-" }}</td>
+              <td>{{ fmt_dt(s.clock_out) if s.clock_out else "-" }}</td>
+              <td>
+                {% if s.clock_out %}
+                  Closed
+                {% else %}
+                  Open
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <div class="muted" style="padding:12px 0;">No recent shift activity.</div>
+    {% endif %}
   </div>
 {% endblock %}

@@ -1,47 +1,67 @@
-{% extends "base_admin.html" %}
-{% set title = "Admin Dashboard" %}
-{% block content %}
+@app.get("/admin")
+def admin_dashboard():
+    guard = admin_guard()
+    if guard:
+        return guard
 
-<div class="row g-3">
-  <div class="col-md-3">
-    <div class="card shadow-sm">
-      <div class="card-body">
-        <div class="text-muted">Open Shifts</div>
-        <div class="display-6">{{ open_shifts }}</div>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-3">
-    <div class="card shadow-sm">
-      <div class="card-body">
-        <div class="text-muted">Employees</div>
-        <div class="display-6">{{ employees }}</div>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-3">
-    <div class="card shadow-sm">
-      <div class="card-body">
-        <div class="text-muted">Stores</div>
-        <div class="display-6">{{ stores }}</div>
-      </div>
-    </div>
-  </div>
-  <div class="col-md-3">
-    <div class="card shadow-sm">
-      <div class="card-body">
-        <div class="text-muted">Shifts (7 days)</div>
-        <div class="display-6">{{ shifts_7d }}</div>
-      </div>
-    </div>
-  </div>
-</div>
+    total_employees = Employee.query.count()
+    active_employees = Employee.query.filter_by(active=True).count()
+    inactive_employees = Employee.query.filter_by(active=False).count()
 
-<div class="mt-4 d-flex flex-wrap gap-2">
-  <a class="btn btn-dark" href="{{ url_for('admin_employees') }}">Manage Employees</a>
-  <a class="btn btn-dark" href="{{ url_for('admin_stores') }}">Manage Stores</a>
-  <a class="btn btn-dark" href="{{ url_for('admin_shifts') }}">View Shifts</a>
-  <a class="btn btn-dark" href="{{ url_for('admin_payroll') }}">Payroll Report</a>
-</div>
+    open_shifts = (
+        Shift.query
+        .filter(Shift.clock_out.is_(None))
+        .order_by(Shift.clock_in.desc())
+        .all()
+    )
+    open_shift_count = len(open_shifts)
 
-{% endblock %}
+    stores = Store.query.count()
+    last7 = now_utc() - timedelta(days=7)
+    shifts_7d = Shift.query.filter(Shift.clock_in >= last7).count()
+
+    # Currently clocked in rows
+    open_shift_rows = []
+    for s in open_shifts:
+        mins = int((now_utc() - s.clock_in).total_seconds() // 60) if s.clock_in else 0
+
+        if mins >= 600:
+            status_color = "#dc2626"   # red
+        elif mins >= 480:
+            status_color = "#d97706"   # amber
+        else:
+            status_color = "#16a34a"   # green
+
+        open_shift_rows.append({
+            "shift_id": s.id,
+            "employee_name": s.employee.name if s.employee else "Unknown",
+            "store_name": s.store.name if s.store else "Unknown",
+            "clock_in": s.clock_in,
+            "minutes": mins,
+            "human": minutes_to_human(mins),
+            "status_color": status_color,
+        })
+
+    # Open issue count
+    open_issues_count = MobileIssueReport.query.filter(MobileIssueReport.status == "open").count()
+
+    # Recent activity = latest shifts (clock in/out activity)
+    recent_shifts = (
+        Shift.query
+        .order_by(Shift.created_at.desc())
+        .limit(10)
+        .all()
+    )
+
+    return render_template(
+        "admin.html",
+        total_employees=total_employees,
+        active_employees=active_employees,
+        inactive_employees=inactive_employees,
+        open_shift_count=open_shift_count,
+        stores=stores,
+        shifts_7d=shifts_7d,
+        open_shift_rows=open_shift_rows,
+        open_issues_count=open_issues_count,
+        recent_shifts=recent_shifts,
+    )
