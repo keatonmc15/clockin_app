@@ -10,12 +10,11 @@
       </div>
 
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-        <!-- Tabs -->
         <a class="btn {% if view == 'active' %}btn-primary{% endif %}" href="{{ url_for('admin_employees') }}">Active</a>
 
         <a class="btn {% if view == 'inactive' %}btn-primary{% endif %}"
            href="{{ url_for('admin_employees', view='inactive') }}">
-          Inactive{% if inactive_count is defined %} ({{ inactive_count }}){% endif %}
+          Inactive ({{ inactive_count }})
         </a>
 
         <a class="btn {% if view == 'all' %}btn-primary{% endif %}"
@@ -26,61 +25,75 @@
     </div>
   </div>
 
+  <!-- 🔍 FILTER BAR -->
   <div class="card">
-    <div style="font-size:16px; font-weight:800; margin-bottom:10px;">Add Employee</div>
-    <form method="post" style="display:grid; grid-template-columns: 2fr 1fr 160px; gap:10px; align-items:end;">
-      <input type="hidden" name="action" value="create"/>
+    <form method="get" style="display:flex; gap:10px; flex-wrap:wrap; align-items:end;">
+      <input type="hidden" name="view" value="{{ view }}">
 
       <div>
-        <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Name</div>
-        <input name="name" placeholder="Employee name" required>
+        <div style="font-size:12px; color:#6b7280;">Search</div>
+        <input name="q" value="{{ q or '' }}" placeholder="Search name">
       </div>
 
       <div>
-        <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">PIN</div>
-        <input name="pin" placeholder="PIN (unique)" required>
+        <div style="font-size:12px; color:#6b7280;">Store</div>
+        <select name="store_id">
+          <option value="">All</option>
+          {% for s in stores %}
+            <option value="{{ s.id }}" {% if store_id|string == s.id|string %}selected{% endif %}>
+              {{ s.name }}
+            </option>
+          {% endfor %}
+        </select>
       </div>
 
       <div>
-        <button class="btn btn-primary" type="submit" style="width:100%;">Create</button>
+        <div style="font-size:12px; color:#6b7280;">Sort</div>
+        <select name="sort">
+          <option value="last_name" {% if sort == 'last_name' %}selected{% endif %}>Last Name</option>
+          <option value="last_clock_in" {% if sort == 'last_clock_in' %}selected{% endif %}>Last Clock-In</option>
+        </select>
       </div>
+
+      <button class="btn btn-primary" type="submit">Apply</button>
     </form>
-
-    {% if view == 'inactive' %}
-      <div style="color:#6b7280; margin-top:10px; font-size:13px;">
-        You are viewing <b>inactive</b> employees.
-      </div>
-    {% elif view == 'all' %}
-      <div style="color:#6b7280; margin-top:10px; font-size:13px;">
-        You are viewing <b>all</b> employees (active + inactive).
-      </div>
-    {% endif %}
   </div>
 
+  <!-- ADD EMPLOYEE (UNCHANGED) -->
+  <div class="card">
+    <div style="font-size:16px; font-weight:800; margin-bottom:10px;">Add Employee</div>
+    <form method="post" style="display:grid; grid-template-columns: 2fr 1fr 160px; gap:10px;">
+      <input type="hidden" name="action" value="create"/>
+
+      <input name="name" placeholder="Employee name" required>
+      <input name="pin" placeholder="PIN (unique)" required>
+      <button class="btn btn-primary" type="submit">Create</button>
+    </form>
+  </div>
+
+  <!-- EMPLOYEE TABLE -->
   <div class="card">
     <div style="font-size:16px; font-weight:800;">Employee List</div>
-    <div style="color:#6b7280; margin-top:6px; font-size:13px;">
-      Tip: Edit a row and click <b>Save</b>. Delete is blocked if the employee has shift history.
-    </div>
-
-    <div style="height:12px;"></div>
 
     <table>
       <thead>
         <tr>
-          <th style="min-width:260px;">Name</th>
-          <th style="min-width:140px;">PIN</th>
-          <th style="min-width:140px;">Status</th>
-          <th style="min-width:220px; text-align:right;">Actions</th>
+          <th>Name</th>
+          <th>PIN</th>
+          <th>Status</th>
+          <th>Last Store</th>
+          <th>Last Clock-In</th>
+          <th style="text-align:right;">Actions</th>
         </tr>
       </thead>
 
       <tbody>
-        {% for e in employees %}
+        {% for row in employee_rows %}
+          {% set e = row.employee %}
           <tr>
-            <!-- SAVE form -->
+
             <td>
-              <form method="post" action="{{ url_for('admin_employees_update') }}" id="save-emp-{{ e.id }}" style="margin:0;">
+              <form method="post" action="{{ url_for('admin_employees_update') }}" id="save-emp-{{ e.id }}">
                 <input type="hidden" name="employee_id" value="{{ e.id }}">
                 <input name="name" value="{{ e.name }}" required>
               </form>
@@ -91,39 +104,34 @@
             </td>
 
             <td>
-              <select form="save-emp-{{ e.id }}" name="active" style="padding:8px 10px; width:100%; border:1px solid #d1d5db; border-radius:8px; font-size:14px;">
+              <select form="save-emp-{{ e.id }}" name="active">
                 <option value="1" {% if e.active %}selected{% endif %}>Active</option>
                 <option value="0" {% if not e.active %}selected{% endif %}>Inactive</option>
               </select>
             </td>
 
-            <td style="text-align:right; white-space:nowrap;">
+            <td>
+              {{ row.last_store_name or "-" }}
+            </td>
+
+            <td>
+              {{ fmt_dt(row.last_clock_in) if row.last_clock_in else "-" }}
+            </td>
+
+            <td style="text-align:right;">
               <button class="btn btn-primary" type="submit" form="save-emp-{{ e.id }}">Save</button>
 
-              <form method="post" action="{{ url_for('admin_employees_delete') }}" style="display:inline; margin:0;">
+              <form method="post" action="{{ url_for('admin_employees_delete') }}" style="display:inline;">
                 <input type="hidden" name="employee_id" value="{{ e.id }}">
                 <button class="btn btn-danger" type="submit"
-                        onclick="return confirm('Delete employee: {{ e.name }}? This is blocked if they have any shift history.')">
+                        onclick="return confirm('Delete {{ e.name }}?')">
                   Delete
                 </button>
               </form>
             </td>
+
           </tr>
         {% endfor %}
-
-        {% if employees|length == 0 %}
-          <tr>
-            <td colspan="4" style="padding:16px; color:#6b7280;">
-              {% if view == 'inactive' %}
-                No inactive employees.
-              {% elif view == 'all' %}
-                No employees yet.
-              {% else %}
-                No active employees.
-              {% endif %}
-            </td>
-          </tr>
-        {% endif %}
       </tbody>
     </table>
   </div>

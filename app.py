@@ -2397,7 +2397,8 @@ def admin_import():
 @app.route("/admin/employees", methods=["GET", "POST"])
 def admin_employees():
     guard = admin_guard()
-    if guard: return guard
+    if guard:
+        return guard
 
     if request.method == "POST":
         action = request.form.get("action")
@@ -2426,8 +2427,12 @@ def admin_employees():
                 flash(f"Employee {'activated' if emp.active else 'deactivated'}.", "success")
 
     view = (request.args.get("view") or "active").strip().lower()
+    search_q = (request.args.get("q") or "").strip()
+    store_id_raw = (request.args.get("store_id") or "").strip()
+    sort_by = (request.args.get("sort") or "last_name").strip().lower()
 
     q = Employee.query
+
     if view == "inactive":
         q = q.filter(Employee.active.is_(False))
     elif view == "all":
@@ -2436,14 +2441,81 @@ def admin_employees():
         q = q.filter(Employee.active.is_(True))
         view = "active"
 
-    employees = q.order_by(Employee.name.asc()).all()
+    if search_q:
+        like = f"%{search_q.lower()}%"
+        q = q.filter(func.lower(Employee.name).like(like))
+
+    employees = q.all()
+
+    stores = Store.query.order_by(Store.name.asc()).all()
+
+    selected_store_id = None
+    if store_id_raw:
+        try:
+            selected_store_id = int(store_id_raw)
+        except ValueError:
+            selected_store_id = None
+
+    # Build helper data per employee
+    employee_rows = []
+    for emp in employees:
+        last_shift = (
+            Shift.query
+            .filter(Shift.employee_id == emp.id)
+            .order_by(Shift.clock_in.desc())
+            .first()
+        )
+
+        last_store_id = last_shift.store_id if last_shift else None
+        last_store_name = last_shift.store.name if last_shift and last_shift.store else ""
+        last_clock_in = last_shift.clock_in if last_shift else None
+
+        employee_rows.append({
+            "employee": emp,
+            "last_shift": last_shift,
+            "last_store_id": last_store_id,
+            "last_store_name": last_store_name,
+            "last_clock_in": last_clock_in,
+        })
+
+    # Filter by store using last shift's store
+    if selected_store_id:
+        employee_rows = [
+            row for row in employee_rows
+            if row["last_store_id"] == selected_store_id
+        ]
+
+    # Sort
+    if sort_by == "last_clock_in":
+        employee_rows = sorted(
+            employee_rows,
+            key=lambda row: (
+                row["last_clock_in"] is None,
+                -(row["last_clock_in"].timestamp()) if row["last_clock_in"] else 0
+            )
+        )
+    else:
+        sort_by = "last_name"
+        employee_rows = sorted(
+            employee_rows,
+            key=lambda row: (
+                row["employee"].name.split()[-1].lower(),
+                row["employee"].name.lower()
+            )
+        )
+
     inactive_count = Employee.query.filter(Employee.active.is_(False)).count()
 
     return render_template(
         "employees.html",
-        employees=employees,
+        employee_rows=employee_rows,
+        employees=[row["employee"] for row in employee_rows],  # backwards compatibility if needed
+        stores=stores,
         view=view,
-        inactive_count=inactive_count
+        inactive_count=inactive_count,
+        q=search_q,
+        store_id=store_id_raw,
+        sort=sort_by
     )
 
 @app.post("/admin/employees/update")
