@@ -1018,14 +1018,22 @@ def api_mobile_clock_in():
     data = request.get_json(silent=True) or {}
 
     pin = (data.get("pin") or "").strip()
+    qr_token = normalize_store_code(
+        data.get("qr_token") or data.get("store_code") or ""
+    )
+
     lat = data.get("lat")
     lon = data.get("lon")
     accuracy_m = data.get("accuracy_m")
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
 
-    if not pin or lat is None or lon is None:
-        return jsonify({"ok": False, "error": "missing_required_fields"}), 400
+    if not pin or not qr_token or lat is None or lon is None:
+        return jsonify({
+            "ok": False,
+            "error": "missing_required_fields",
+            "required": ["pin", "qr_token", "lat", "lon"]
+        }), 400
 
     try:
         lat = float(lat)
@@ -1039,7 +1047,10 @@ def api_mobile_clock_in():
     if not emp or not emp.active:
         return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
-    # Prevent double clock-in
+    selected_store = Store.query.filter(func.lower(Store.qr_token) == qr_token).first()
+    if not selected_store:
+        return jsonify({"ok": False, "error": "invalid_store_code"}), 404
+
     existing = Shift.query.filter(
         Shift.employee_id == emp.id,
         Shift.clock_out.is_(None)
@@ -1048,24 +1059,41 @@ def api_mobile_clock_in():
     if existing:
         return jsonify({"ok": False, "error": "already_clocked_in"}), 409
 
-    # Auto-detect store from location
-    result = find_store_for_location(lat, lon, accuracy_m)
-    if not result.get("ok"):
-        return jsonify({"ok": False, "error": "location_invalid", **result}), 403
-
-    store = result["store"]
-
-    # Device guardrail
     if device_uuid:
         other = _device_has_other_open_shift(device_uuid, emp.id)
         if other:
             return jsonify({"ok": False, "error": "device_in_use"}), 409
 
+    if accuracy_m is not None and accuracy_m > 120:
+        return jsonify({
+            "ok": False,
+            "error": "accuracy_too_low",
+            "message": "GPS accuracy is too low. Step outside and try again.",
+            "accuracy_m": accuracy_m
+        }), 403
+
+    dist_m = haversine_m(
+        lat,
+        lon,
+        selected_store.latitude,
+        selected_store.longitude
+    )
+
+    if dist_m > selected_store.geofence_radius_m:
+        return jsonify({
+            "ok": False,
+            "error": "outside_selected_store_geofence",
+            "message": "You are not at the selected store location.",
+            "store_name": selected_store.name,
+            "distance_m": round(dist_m, 1),
+            "required_radius_m": selected_store.geofence_radius_m
+        }), 403
+
     _touch_employee_device(emp, device_uuid, device_label)
 
     shift = Shift(
         employee_id=emp.id,
-        store_id=store.id,
+        store_id=selected_store.id,
         clock_in=now_utc(),
         clock_in_lat=lat,
         clock_in_lng=lon,
@@ -1078,9 +1106,13 @@ def api_mobile_clock_in():
     return jsonify({
         "ok": True,
         "shift_id": shift.id,
-        "store_name": store.name,
+        "employee_id": emp.id,
+        "employee_name": emp.name,
+        "store_id": selected_store.id,
+        "store_name": selected_store.name,
+        "distance_m": round(dist_m, 1),
         "clock_in_utc": shift.clock_in.isoformat() + "Z"
-    })
+    }), 200
 
 @app.post("/api/mobile/clock-out")
 def api_mobile_clock_out():
