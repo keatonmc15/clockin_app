@@ -1585,83 +1585,11 @@ def mobile_validate_location():
 
 @app.post("/mobile/clock-in")
 def mobile_clock_in():
-    ok, err = _require_mobile_auth()
-    if not ok:
-        msg, code = err
-        return jsonify({"ok": False, "error": msg}), code
-
-    data = request.get_json(silent=True) or {}
-
-    pin = (data.get("pin") or "").strip()
-    device_uuid = (data.get("device_uuid") or "").strip()
-
-    lat = data.get("lat")
-    lon = data.get("lon")
-    accuracy_m = data.get("accuracy_m")
-
-    if not pin or not device_uuid:
-        return jsonify({"ok": False, "error": "missing_pin_or_device_uuid"}), 400
-
-    if lat is None or lon is None:
-        return jsonify({"ok": False, "error": "missing_lat_lon"}), 400
-
-    try:
-        lat = float(lat)
-        lon = float(lon)
-        if accuracy_m is not None:
-            accuracy_m = float(accuracy_m)
-    except (TypeError, ValueError):
-        return jsonify({"ok": False, "error": "invalid_lat_lon"}), 400
-
-    employee = Employee.query.filter_by(pin=pin, active=True).first()
-    if not employee:
-        return jsonify({"ok": False, "error": "invalid_pin"}), 401
-
-    store_result = find_store_for_location(lat, lon, accuracy_m)
-    if not store_result.get("ok"):
-        return jsonify({"ok": False, "error": "location_invalid", **store_result}), 200
-
-    store = store_result["store"]
-    dist_m = store_result.get("distance_m")
-
-    open_shift = Shift.query.filter_by(employee_id=employee.id, clock_out=None).order_by(Shift.clock_in.desc()).first()
-    if open_shift:
-        return jsonify({
-            "ok": True,
-            "already_clocked_in": True,
-            "shift_id": open_shift.id,
-            "employee_id": employee.id,
-            "employee_name": employee.name,
-            "store_id": open_shift.store_id,
-            "store_name": Store.query.get(open_shift.store_id).name if open_shift.store_id else None,
-            "clock_in": open_shift.clock_in.isoformat(),
-        }), 200
-
-    shift = Shift(
-        employee_id=employee.id,
-        store_id=store.id,
-        clock_in=now_utc(),
-        clock_in_lat=lat,
-        clock_in_lng=lon,
-        clock_in_device_uuid=device_uuid,
-        closed_by_admin=False,
-        created_at=now_utc(),
-    )
-    db.session.add(shift)
-    db.session.commit()
-
     return jsonify({
-        "ok": True,
-        "already_clocked_in": False,
-        "shift_id": shift.id,
-        "employee_id": employee.id,
-        "employee_name": employee.name,
-        "store_id": store.id,
-        "store_name": store.name,
-        "distance_m": dist_m,
-        "geofence_radius_m": store.geofence_radius_m,
-        "clock_in": shift.clock_in.isoformat(),
-    }), 200
+        "ok": False,
+        "error": "deprecated_endpoint",
+        "message": "Use /api/mobile/clock-in instead."
+    }), 410
 
 # -----------------------------
 # Employee Clock Page
