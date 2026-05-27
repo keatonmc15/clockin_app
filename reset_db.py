@@ -1,10 +1,9 @@
 import os
 import psycopg2
 
-DATABASE_URL = os.environ.get(
-    "DATABASE_URL",
-    "postgresql://candcjan:WGx3HkvQQbM6gQ2sl0b8RN54oSohbcMd@dpg-d4s90akcjiac73fdc730-a.ohio-postgres.render.com/clockin_db_ht20"
-)
+DATABASE_URL = (os.environ.get("DATABASE_URL") or "").strip()
+if not DATABASE_URL:
+    raise RuntimeError("DATABASE_URL environment variable is required")
 
 print("Connecting to database...")
 conn = psycopg2.connect(DATABASE_URL)

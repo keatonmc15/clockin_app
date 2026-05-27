@@ -47,10 +47,16 @@ app = Flask(__name__)
 # Basic INFO logging (Render captures these)
 logging.basicConfig(level=logging.INFO)
 
-app.config["SECRET_KEY"] = os.environ.get("SECRET_KEY", "dev_secret_change_me")
+def _required_env(name: str) -> str:
+    value = (os.environ.get(name) or "").strip()
+    if not value:
+        raise RuntimeError(f"{name} environment variable is required")
+    return value
+
+app.config["SECRET_KEY"] = _required_env("SECRET_KEY")
 
 # ✅ Mobile ingest auth token (set on Render)
-app.config["MOBILE_DEVICE_TOKEN"] = (os.environ.get("MOBILE_DEVICE_TOKEN") or "").strip()
+app.config["MOBILE_DEVICE_TOKEN"] = _required_env("MOBILE_DEVICE_TOKEN")
 
 # ✅ Dev endpoint gate
 ENABLE_DEV_EXPORTS = (os.environ.get("ENABLE_DEV_EXPORTS") or "").strip() == "1"
@@ -77,20 +83,7 @@ def _normalize_db_url(raw: str) -> str:
     return raw
 
 
-use_render_db = (os.environ.get("USE_RENDER_DB") or "").strip() == "1"
-env_db_url = _normalize_db_url(os.environ.get("DATABASE_URL"))
-
-if use_render_db:
-    if not env_db_url:
-        raise RuntimeError("USE_RENDER_DB=1 but DATABASE_URL is not set")
-    db_url = env_db_url
-else:
-    # Render-safe: if DATABASE_URL exists anyway, use it
-    if env_db_url:
-        db_url = env_db_url
-    else:
-        # Local fallback (relative path; works on Windows + Render)
-        db_url = "sqlite:///instance/clockin.db"
+db_url = _normalize_db_url(_required_env("DATABASE_URL"))
 
 app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
@@ -109,8 +102,8 @@ except Exception:
 # -----------------------------
 # Admin credentials
 # -----------------------------
-ADMIN_USERNAME = os.environ.get("ADMIN_USERNAME", "dan")
-ADMIN_PASSWORD = os.environ.get("ADMIN_PASSWORD", "Ccss1234")
+ADMIN_USERNAME = _required_env("ADMIN_USERNAME")
+ADMIN_PASSWORD = _required_env("ADMIN_PASSWORD")
 ADMIN_PASSWORD_HASH = os.environ.get("ADMIN_PASSWORD_HASH") or generate_password_hash(ADMIN_PASSWORD)
 
 # -----------------------------
