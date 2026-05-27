@@ -1,0 +1,67 @@
+{% extends "base_admin.html" %}
+{% set title = "Edit Shift" %}
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <h2 class="m-0">Edit Shift #{{ s.id }}</h2>
+  <a class="btn btn-outline-secondary" href="{{ url_for('admin_shifts') }}">Back</a>
+</div>
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <div class="mb-3">
+      <div><strong>Current:</strong> {{ s.employee.name }} @ {{ s.store.name }}</div>
+      <div><strong>Clock In:</strong> {{ fmt_dt(s.clock_in) }}</div>
+      <div><strong>Clock Out:</strong> {{ fmt_dt(s.clock_out) or "—" }}</div>
+      {% if s.clock_out %}
+        <div><strong>Worked:</strong> {{ minutes_to_human(shift_minutes(s)) }}</div>
+      {% endif %}
+    </div>
+
+    <form method="post" class="row g-3">
+      <div class="col-md-6">
+        <label class="form-label">Employee</label>
+        <select class="form-select" name="employee_id" required>
+          {% for e in employees %}
+            <option value="{{ e.id }}" {% if e.id == s.employee_id %}selected{% endif %}>
+              {{ e.name }}{% if not e.active %} (inactive){% endif %}
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Store</label>
+        <select class="form-select" name="store_id" required>
+          {% for st in stores %}
+            <option value="{{ st.id }}" {% if st.id == s.store_id %}selected{% endif %}>
+              {{ st.name }} ({{ st.qr_token }})
+            </option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Clock In</label>
+        <input type="datetime-local" class="form-control" name="clock_in"
+               value="{{ (s.clock_in.astimezone(APP_TZ) if s.clock_in.tzinfo and APP_TZ else s.clock_in).strftime('%Y-%m-%dT%H:%M') }}"
+               required>
+      </div>
+
+      <div class="col-md-6">
+        <label class="form-label">Clock Out (optional)</label>
+        <input type="datetime-local" class="form-control" name="clock_out"
+               value="{% if s.clock_out %}{{ (s.clock_out.astimezone(APP_TZ) if s.clock_out.tzinfo and APP_TZ else s.clock_out).strftime('%Y-%m-%dT%H:%M') }}{% endif %}">
+      </div>
+
+      <div class="col-12">
+        <label class="form-label">Reason (required)</label>
+        <textarea class="form-control" name="reason" rows="3" placeholder="Why are you changing this shift?" required></textarea>
+      </div>
+
+      <div class="col-12">
+        <button class="btn btn-dark" type="submit">Save Changes</button>
+      </div>
+    </form>
+  </div>
+</div>
+{% endblock %}

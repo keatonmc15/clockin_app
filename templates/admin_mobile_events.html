@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+
+<div class="container mt-4">
+  <h2>Mobile Events</h2>
+  <p class="text-muted">
+    Raw events received from the mobile app (BG Geolocation).
+  </p>
+
+  <form method="get" class="row g-2 mb-3">
+    <div class="col-md-3">
+      <label class="form-label">Event Type</label>
+      <input class="form-control" name="event" value="{{ event or '' }}" placeholder="location, geofence, heartbeat..." />
+    </div>
+
+    <div class="col-md-4">
+      <label class="form-label">Device UUID</label>
+      <input class="form-control" name="device" value="{{ device or '' }}" placeholder="uuid..." />
+    </div>
+
+    <div class="col-md-2">
+      <label class="form-label">Limit</label>
+      <input class="form-control" name="limit" value="{{ limit or 200 }}" />
+    </div>
+
+    <div class="col-md-3 d-flex align-items-end gap-2">
+      <button class="btn btn-primary" type="submit">Filter</button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('admin_mobile_events') }}">Clear</a>
+    </div>
+  </form>
+
+  <div class="table-responsive">
+    <table class="table table-sm table-striped align-middle">
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Received</th>
+          <th>Event At</th>
+          <th>Type</th>
+          <th>Device</th>
+          <th>Moving</th>
+          <th>Lat</th>
+          <th>Lng</th>
+          <th>Acc</th>
+          <th>Raw</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in events %}
+          <tr>
+            <td>{{ e.id }}</td>
+            <td style="white-space:nowrap">{{ fmt_dt(e.received_at) }}</td>
+            <td style="white-space:nowrap">{{ fmt_dt(e.event_at) }}</td>
+            <td>{{ e.event_type }}</td>
+            <td style="max-width:240px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">
+              {{ e.device_uuid or '' }}
+            </td>
+            <td>{{ 'true' if e.is_moving else ('false' if e.is_moving == False else '') }}</td>
+            <td>{{ '%.6f'|format(e.lat) if e.lat is not none else '' }}</td>
+            <td>{{ '%.6f'|format(e.lng) if e.lng is not none else '' }}</td>
+            <td>{{ '%.1f'|format(e.accuracy) if e.accuracy is not none else '' }}</td>
+            <td>
+              <details>
+                <summary>view</summary>
+                <pre style="white-space:pre-wrap; max-width:700px">{{ e.raw_json }}</pre>
+              </details>
+            </td>
+          </tr>
+        {% else %}
+          <tr>
+            <td colspan="10" class="text-muted">No mobile events yet.</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+{% endblock %}

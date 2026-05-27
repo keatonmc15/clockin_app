@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}Shifts{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <h2>Open Shifts</h2>
+    {% if open_shifts|length == 0 %}
+      <p>No one is currently clocked in.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Shift ID</th>
+            <th>Employee</th>
+            <th>Clock In</th>
+            <th>Hours (live)</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in open_shifts %}
+          <tr>
+            <td>{{ s.id }}</td>
+            <td><strong>{{ s.employee.name }}</strong></td>
+            <td>{{ s.clock_in_at }}</td>
+            <td>{{ shift_hours(s) }}</td>
+            <td>
+              <form method="POST" action="/admin/shifts/{{ s.id }}/force_clock_out" style="display:inline;">
+                <button class="btn btn-danger" type="submit">Force Clock-Out</button>
+              </form>
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <h2>Recent Closed Shifts (last 50)</h2>
+    {% if recent_closed|length == 0 %}
+      <p>No closed shifts yet.</p>
+    {% else %}
+      <table>
+        <thead>
+          <tr>
+            <th>Shift ID</th>
+            <th>Employee</th>
+            <th>Clock In</th>
+            <th>Clock Out</th>
+            <th>Hours</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for s in recent_closed %}
+          <tr>
+            <td>{{ s.id }}</td>
+            <td><strong>{{ s.employee.name }}</strong></td>
+            <td>{{ s.clock_in_at }}</td>
+            <td>{{ s.clock_out_at }}</td>
+            <td>{{ shift_hours(s) }}</td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+{% endblock %}

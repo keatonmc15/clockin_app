@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Shifts{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+      <div>
+        <div style="font-size:28px; font-weight:800;">Shifts</div>
+        <div style="color:#6b7280; margin-top:6px;">
+          Shifts for selected range (open first, then newest). Default is last completed Mon–Sun.
+        </div>
+      </div>
+      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+        <a class="btn btn-primary" href="{{ url_for('admin_shift_new') }}">Add Shift</a>
+        <a class="btn" href="{{ url_for('admin_audit') }}">Audit Log</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- Date range filter -->
+  <div class="card">
+    <form method="get" action="{{ url_for('admin_shifts') }}">
+      <div style="display:flex; gap:10px; align-items:end; flex-wrap:wrap;">
+        <div style="min-width:160px;">
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">Start</div>
+          <input type="date" name="start" value="{{ start }}">
+        </div>
+
+        <div style="min-width:160px;">
+          <div style="font-size:12px; text-transform:uppercase; color:#6b7280; margin-bottom:6px;">End</div>
+          <input type="date" name="end" value="{{ end }}">
+        </div>
+
+        <div style="min-width:140px;">
+          <button class="btn btn-primary" type="submit" style="width:100%;">View</button>
+        </div>
+
+        <div style="color:#6b7280; font-size:13px; padding-bottom:4px;">
+          {% if total_in_view is not none %}
+            Showing <b>{{ total_in_view }}</b>
+          {% endif %}
+        </div>
+
+        <div style="margin-left:auto; display:flex; gap:8px; flex-wrap:wrap;">
+          <input type="hidden" name="per_page" value="{{ per_page if per_page is defined else 200 }}">
+          {% if has_prev %}
+            <a class="btn" href="{{ url_for('admin_shifts', start=start, end=end, page=page-1, per_page=per_page) }}">Prev</a>
+          {% endif %}
+          {% if has_next %}
+            <a class="btn" href="{{ url_for('admin_shifts', start=start, end=end, page=page+1, per_page=per_page) }}">Next</a>
+          {% endif %}
+        </div>
+      </div>
+    </form>
+  </div>
+
+  <div class="card">
+    <table>
+      <thead>
+        <tr>
+          <th>Status</th>
+          <th>Employee</th>
+          <th>Store</th>
+          <th>Clock In</th>
+          <th>Clock Out</th>
+          <th>Worked</th>
+          <th></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for s in shifts %}
+          <tr>
+            <td>
+              {% if s.clock_out %}
+                <span style="color:#6b7280; font-weight:700;">Closed</span>
+              {% else %}
+                <span style="color:#16a34a; font-weight:700;">Open</span>
+              {% endif %}
+            </td>
+            <td>{{ s.employee.name }}</td>
+            <td>{{ s.store.name }}</td>
+            <td>{{ fmt_dt(s.clock_in) }}</td>
+            <td>{{ fmt_dt(s.clock_out) }}</td>
+            <td>
+              {% if s.clock_out %}
+                {{ minutes_to_human(shift_minutes(s)) }}
+              {% else %}
+                —
+              {% endif %}
+            </td>
+            <td style="white-space:nowrap; text-align:right;">
+              <!-- View pings filtered to this shift -->
+              <a class="btn" href="{{ url_for('admin_pings', shift_id=s.id) }}">View GPS</a>
+
+              <a class="btn btn-primary" href="{{ url_for('admin_shift_edit', shift_id=s.id) }}">Edit</a>
+
+              {% if not s.clock_out %}
+                <form method="post" action="{{ url_for('admin_close_shift') }}" style="display:inline; margin:0;">
+                  <input type="hidden" name="shift_id" value="{{ s.id }}">
+                  <button class="btn" type="submit">Close</button>
+                </form>
+              {% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+
+        {% if shifts|length == 0 %}
+          <tr>
+            <td colspan="7" style="padding:16px; color:#6b7280;">No shifts found.</td>
+          </tr>
+        {% endif %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}

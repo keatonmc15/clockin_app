@@ -1,0 +1,71 @@
+{% extends "base.html" %}
+{% block title %}Employees{% endblock %}
+
+{% block content %}
+  <div class="card">
+    <div class="row">
+      <div>
+        <div class="h1">Employees</div>
+        <div class="muted">Add employees and manage QR codes.</div>
+      </div>
+    </div>
+
+    <div style="height:12px;"></div>
+
+    <form method="POST" style="display:grid; grid-template-columns: 1fr auto; gap:10px; align-items:end;">
+      <div>
+        <label>Employee name</label>
+        <input name="name" placeholder="e.g. John Smith" />
+      </div>
+      <button class="btn btn-primary" type="submit">Add</button>
+    </form>
+  </div>
+
+  <div style="height:14px;"></div>
+
+  <div class="card">
+    <div class="row" style="margin-bottom:8px;">
+      <div class="h1" style="margin:0;">Employee list</div>
+      <div class="muted">{{ employees|length }} total</div>
+    </div>
+
+    <table class="table">
+      <thead>
+        <tr>
+          <th style="width:60px;">ID</th>
+          <th>Name</th>
+          <th>Status</th>
+          <th>QR Code</th>
+          <th style="width:220px;">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in employees %}
+          <tr>
+            <td>{{ e.id }}</td>
+            <td><strong>{{ e.name }}</strong></td>
+            <td>
+              {% if e.active %}
+                <span class="badge badge-ok">ACTIVE</span>
+              {% else %}
+                <span class="badge badge-off">INACTIVE</span>
+              {% endif %}
+            </td>
+            <td><code>{{ e.qr_code }}</code></td>
+            <td>
+              <button class="btn" type="button" onclick="copyText('{{ e.qr_code }}')">Copy QR</button>
+
+              <form method="POST" action="/admin/employees/{{ e.id }}/toggle" style="display:inline;">
+                {% if e.active %}
+                  <button class="btn btn-danger" type="submit">Disable</button>
+                {% else %}
+                  <button class="btn btn-ok" type="submit">Enable</button>
+                {% endif %}
+              </form>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% endblock %}
