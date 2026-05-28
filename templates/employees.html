@@ -6,7 +6,7 @@
     <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
       <div>
         <div style="font-size:28px; font-weight:800;">Employees</div>
-        <div style="color:#6b7280; margin-top:6px;">Manage employee names, PINs, and active status.</div>
+        <div style="color:#6b7280; margin-top:6px;">Manage employee names, username/codes, PINs, and active status.</div>
       </div>
 
       <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
@@ -32,7 +32,7 @@
 
       <div>
         <div style="font-size:12px; color:#6b7280;">Search</div>
-        <input name="q" value="{{ q or '' }}" placeholder="Search name">
+        <input name="q" value="{{ q or '' }}" placeholder="Search name or username/code">
       </div>
 
       <div>
@@ -59,14 +59,15 @@
     </form>
   </div>
 
-  <!-- ADD EMPLOYEE (UNCHANGED) -->
+  <!-- ADD EMPLOYEE -->
   <div class="card">
     <div style="font-size:16px; font-weight:800; margin-bottom:10px;">Add Employee</div>
-    <form method="post" style="display:grid; grid-template-columns: 2fr 1fr 160px; gap:10px;">
+    <form method="post" style="display:grid; grid-template-columns: 2fr 1fr 1fr 160px; gap:10px;">
       <input type="hidden" name="action" value="create"/>
 
       <input name="name" placeholder="Employee name" required>
-      <input name="pin" placeholder="PIN (unique)" required>
+      <input name="username_code" placeholder="Username/code (unique)" required autocapitalize="none" autocomplete="off">
+      <input name="pin" type="password" placeholder="PIN (unique)" required autocomplete="new-password">
       <button class="btn btn-primary" type="submit">Create</button>
     </form>
   </div>
@@ -79,6 +80,7 @@
       <thead>
         <tr>
           <th>Name</th>
+          <th>Username/Code</th>
           <th>PIN</th>
           <th>Status</th>
           <th>Last Store</th>
@@ -100,7 +102,19 @@
             </td>
 
             <td>
-              <input form="save-emp-{{ e.id }}" name="pin" value="{{ e.pin }}" required>
+              <input form="save-emp-{{ e.id }}"
+                     name="username_code"
+                     value="{{ e.username_code or suggest_employee_username(e.name) }}"
+                     required
+                     autocapitalize="none"
+                     autocomplete="off">
+              {% if not e.username_code %}
+                <div style="font-size:12px; color:#6b7280; margin-top:4px;">Suggested from name</div>
+              {% endif %}
+            </td>
+
+            <td>
+              <input form="save-emp-{{ e.id }}" name="pin" type="password" value="{{ e.pin }}" required autocomplete="new-password">
             </td>
 
             <td>

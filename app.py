@@ -3,6 +3,7 @@ import math
 import logging
 import csv
 import json
+import re
 from io import TextIOWrapper
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, time as dtime
@@ -155,6 +156,7 @@ class Employee(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
     name = db.Column(db.String(120), nullable=False)
+    username_code = db.Column(db.String(80), unique=True, nullable=True)
     pin = db.Column(db.String(20), nullable=False)
     active = db.Column(db.Boolean, default=True, nullable=False)
 
@@ -464,6 +466,70 @@ def admin_username() -> str:
 def normalize_store_code(val: str) -> str:
     return (val or "").strip().lower()
 
+def normalize_employee_code(val: str) -> str:
+    return (val or "").strip().lower()
+
+def suggest_employee_username(name: str) -> str:
+    base = re.sub(r"[^a-z0-9]+", "_", (name or "").strip().lower()).strip("_")
+    return base or "employee"
+
+def employee_code_exists(code: str, exclude_id: int | None = None) -> bool:
+    code = normalize_employee_code(code)
+    if not code:
+        return False
+
+    q = Employee.query.filter(func.lower(Employee.username_code) == code)
+    if exclude_id is not None:
+        q = q.filter(Employee.id != exclude_id)
+    return q.first() is not None
+
+def unique_employee_code_from_name(name: str) -> str:
+    base = suggest_employee_username(name)
+    candidate = base
+    suffix = 2
+    while employee_code_exists(candidate):
+        candidate = f"{base}_{suffix}"
+        suffix += 1
+    return candidate
+
+def employee_payload(emp: "Employee") -> dict:
+    return {
+        "id": emp.id,
+        "name": emp.name,
+        "username_code": emp.username_code or "",
+        "suggested_username_code": suggest_employee_username(emp.name),
+        "active": bool(emp.active),
+        "device_uuid": emp.device_uuid,
+        "device_label": emp.device_label,
+        "device_last_seen_at": fmt_dt(emp.device_last_seen_at) if emp.device_last_seen_at else "",
+    }
+
+def find_employee_for_mobile(username_code: str, pin: str) -> "Employee | None":
+    code = normalize_employee_code(username_code)
+    pin = (pin or "").strip()
+    if not pin:
+        return None
+
+    if code:
+        emp = (
+            Employee.query
+            .filter(func.lower(Employee.username_code) == code, Employee.pin == pin)
+            .first()
+        )
+        if emp:
+            return emp
+
+        # Migration fallback: existing employees without a saved code may use
+        # the generated suggestion shown in admin until the code is saved.
+        legacy_matches = Employee.query.filter(Employee.pin == pin).all()
+        for candidate in legacy_matches:
+            if not (candidate.username_code or "").strip() and suggest_employee_username(candidate.name) == code:
+                return candidate
+        return None
+
+    # Temporary legacy compatibility for old installed mobile builds.
+    return Employee.query.filter_by(pin=pin).first()
+
 def log_event(event: str, **fields):
     parts = [f"{k}={fields[k]}" for k in sorted(fields.keys())]
     app.logger.info("%s %s", event, " ".join(parts))
@@ -588,7 +654,8 @@ def inject_helpers():
         shift_minutes=shift_minutes,
         minutes_to_human=minutes_to_human,
         minutes_to_short=minutes_to_short,
-        minutes_to_decimal_hours=minutes_to_decimal_hours
+        minutes_to_decimal_hours=minutes_to_decimal_hours,
+        suggest_employee_username=suggest_employee_username
     )
 
 # -----------------------------
@@ -636,6 +703,29 @@ def _ensure_column(table_name: str, column_name: str, sql_type: str):
             return
         app.logger.exception("Could not ensure column %s.%s", table_name, column_name)
 
+def _ensure_unique_employee_code_index():
+    try:
+        dialect = db.engine.dialect.name
+        if dialect == "sqlite":
+            sql = """
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_employees_username_code
+            ON employees (username_code)
+            WHERE username_code IS NOT NULL AND username_code != ''
+            """
+        elif dialect == "postgresql":
+            sql = """
+            CREATE UNIQUE INDEX IF NOT EXISTS ix_employees_username_code
+            ON employees (username_code)
+            WHERE username_code IS NOT NULL AND username_code <> ''
+            """
+        else:
+            sql = "CREATE UNIQUE INDEX ix_employees_username_code ON employees (username_code)"
+        db.session.execute(text(sql))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Could not ensure unique employee username/code index")
+
 # -----------------------------
 # Create tables on startup (Option B)
 # -----------------------------
@@ -647,9 +737,11 @@ with app.app_context():
         app.logger.exception("DB create_all failed: %s", e)
 
     # Ensure new Option 2 columns exist (no migrations needed)
+    _ensure_column("employees", "username_code", "VARCHAR(80)")
     _ensure_column("employees", "device_uuid", "VARCHAR(120)")
     _ensure_column("employees", "device_label", "VARCHAR(120)")
     _ensure_column("employees", "device_last_seen_at", "TIMESTAMP")
+    _ensure_unique_employee_code_index()
 
     _ensure_column("shifts", "clock_in_device_uuid", "VARCHAR(120)")
     _ensure_column("shifts", "clock_out_device_uuid", "VARCHAR(120)")
@@ -726,7 +818,13 @@ def dev_export_employees():
     return jsonify({
         "ok": True,
         "employees": [
-            {"name": e.name, "pin": e.pin, "active": bool(e.active)}
+            {
+                "name": e.name,
+                "username_code": e.username_code or "",
+                "suggested_username_code": suggest_employee_username(e.name),
+                "pin": e.pin,
+                "active": bool(e.active)
+            }
             for e in emps
         ]
     })
@@ -796,19 +894,25 @@ def dev_import_employees():
     upserted = 0
     for e in employees:
         name = (e.get("name") or "").strip()
+        username_code = normalize_employee_code(e.get("username_code") or e.get("employee_code") or "")
         pin = (e.get("pin") or "").strip()
         active = bool(e.get("active", True))
 
         if not name or not pin:
             continue
 
+        if not username_code:
+            username_code = unique_employee_code_from_name(name)
+
         existing = Employee.query.filter_by(pin=pin).first()
         if existing:
             existing.name = name
+            existing.username_code = username_code
             existing.active = active
         else:
             db.session.add(Employee(
                 name=name,
+                username_code=username_code,
                 pin=pin,
                 active=active,
                 created_at=now_utc()
@@ -905,8 +1009,7 @@ def api_stores_all():
 @app.post("/api/mobile/me")
 def api_mobile_me():
     """
-    Option C: PIN always works. Device UUID is accepted and stored as "last seen".
-    Body: { pin, device_uuid?, device_label? }
+    Body: { username_code, pin, device_uuid?, device_label? }
     """
     ok, err = _require_mobile_auth()
     if not ok:
@@ -914,6 +1017,7 @@ def api_mobile_me():
         return jsonify({"ok": False, "error": msg}), code
 
     data = request.get_json(silent=True) or {}
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
@@ -921,7 +1025,7 @@ def api_mobile_me():
     if not pin:
         return jsonify({"ok": False, "error": "missing_pin"}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
@@ -930,14 +1034,7 @@ def api_mobile_me():
 
     return jsonify({
         "ok": True,
-        "employee": {
-            "id": emp.id,
-            "name": emp.name,
-            "active": bool(emp.active),
-            "device_uuid": emp.device_uuid,
-            "device_label": emp.device_label,
-            "device_last_seen_at": fmt_dt(emp.device_last_seen_at) if emp.device_last_seen_at else ""
-        },
+        "employee": employee_payload(emp),
         "server_time_utc": now_utc().isoformat() + "Z"
     })
 
@@ -945,7 +1042,7 @@ def api_mobile_me():
 def api_mobile_status():
     """
     Returns employee identity + current open shift (if any).
-    Body: { pin, device_uuid?, device_label? }
+    Body: { username_code, pin, device_uuid?, device_label? }
     """
     ok, err = _require_mobile_auth()
     if not ok:
@@ -953,6 +1050,7 @@ def api_mobile_status():
         return jsonify({"ok": False, "error": msg}), code
 
     data = request.get_json(silent=True) or {}
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
@@ -960,7 +1058,7 @@ def api_mobile_status():
     if not pin:
         return jsonify({"ok": False, "error": "missing_pin"}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
@@ -975,14 +1073,7 @@ def api_mobile_status():
 
     payload = {
         "ok": True,
-        "employee": {
-            "id": emp.id,
-            "name": emp.name,
-            "active": bool(emp.active),
-            "device_uuid": emp.device_uuid,
-            "device_label": emp.device_label,
-            "device_last_seen_at": fmt_dt(emp.device_last_seen_at) if emp.device_last_seen_at else "",
-        },
+        "employee": employee_payload(emp),
         "server_time_utc": now_utc().isoformat() + "Z",
         "open_shift": None,
     }
@@ -1010,6 +1101,7 @@ def api_mobile_clock_in():
 
     data = request.get_json(silent=True) or {}
 
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     qr_token = normalize_store_code(
         data.get("qr_token") or data.get("store_code") or ""
@@ -1036,7 +1128,7 @@ def api_mobile_clock_in():
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "invalid_location"}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
@@ -1116,6 +1208,7 @@ def api_mobile_clock_out():
 
     data = request.get_json(silent=True) or {}
 
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     lat = data.get("lat")
     lon = data.get("lon")
@@ -1134,7 +1227,7 @@ def api_mobile_clock_out():
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "invalid_location"}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
@@ -1185,6 +1278,7 @@ def api_mobile_auto_exit_close():
 
     data = request.get_json(silent=True) or {}
 
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     lat = data.get("lat")
     lon = data.get("lon")
@@ -1206,7 +1300,7 @@ def api_mobile_auto_exit_close():
     except (TypeError, ValueError):
         return jsonify({"ok": False, "error": "invalid_location"}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
@@ -1306,7 +1400,7 @@ def api_mobile_auto_exit_close():
 def api_mobile_geofences():
     """
     Returns the *real* store geofence based on store_code.
-    Body: { pin, qr_token, device_uuid? }  (pin is required; device_uuid stored for last-seen)
+    Body: { username_code, pin, qr_token, device_uuid? }  (pin is required; device_uuid stored for last-seen)
     """
     ok, err = _require_mobile_auth()
     if not ok:
@@ -1315,6 +1409,7 @@ def api_mobile_geofences():
 
     data = request.get_json(silent=True) or {}
 
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     qr_token = normalize_store_code((data.get("qr_token") or "").strip())
 
@@ -1324,7 +1419,7 @@ def api_mobile_geofences():
     if not pin or not qr_token:
         return jsonify({"ok": False, "error": "missing_pin_or_store_code"}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
@@ -1414,11 +1509,12 @@ def api_mobile_report_issue():
 
     data = request.get_json(silent=True) or {}
 
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     if not pin:
         return jsonify({"ok": False, "error": "missing_pin"}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
 
@@ -2391,6 +2487,7 @@ def admin_import():
                     for i, row in enumerate(reader, start=2):
                         try:
                             name = (row.get("name") or "").strip()
+                            username_code = normalize_employee_code(row.get("username_code") or row.get("employee_code") or "")
                             pin = (row.get("pin") or "").strip()
                             active_raw = (row.get("active") or "1").strip().lower()
 
@@ -2400,12 +2497,19 @@ def admin_import():
                                 continue
 
                             active = active_raw not in ("0", "false", "no", "n")
+                            if not username_code:
+                                username_code = unique_employee_code_from_name(name)
 
                             if Employee.query.filter_by(pin=pin).first():
                                 skipped_emps += 1
                                 continue
 
-                            e = Employee(name=name, pin=pin, active=active)
+                            if employee_code_exists(username_code):
+                                skipped_emps += 1
+                                emp_errors.append(f"Employees row {i}: username/code already in use")
+                                continue
+
+                            e = Employee(name=name, username_code=username_code, pin=pin, active=active)
                             db.session.add(e)
                             created_emps += 1
 
@@ -2454,15 +2558,18 @@ def admin_employees():
 
         if action == "create":
             name = (request.form.get("name") or "").strip()
+            username_code = normalize_employee_code(request.form.get("username_code") or "")
             pin = (request.form.get("pin") or "").strip()
 
-            if not name or not pin:
-                flash("Name and PIN required.", "error")
+            if not name or not username_code or not pin:
+                flash("Name, username/code, and PIN required.", "error")
             else:
-                if Employee.query.filter_by(pin=pin).first():
+                if employee_code_exists(username_code):
+                    flash("Username/code already in use.", "error")
+                elif Employee.query.filter_by(pin=pin).first():
                     flash("PIN already in use.", "error")
                 else:
-                    e = Employee(name=name, pin=pin, active=True)
+                    e = Employee(name=name, username_code=username_code, pin=pin, active=True)
                     db.session.add(e)
                     db.session.commit()
                     flash("Employee created.", "success")
@@ -2492,7 +2599,10 @@ def admin_employees():
 
     if search_q:
         like = f"%{search_q.lower()}%"
-        q = q.filter(func.lower(Employee.name).like(like))
+        q = q.filter(
+            (func.lower(Employee.name).like(like)) |
+            (func.lower(Employee.username_code).like(like))
+        )
 
     employees = q.all()
 
@@ -2574,6 +2684,7 @@ def admin_employees_update():
 
     emp_id = request.form.get("employee_id")
     name = (request.form.get("name") or "").strip()
+    username_code = normalize_employee_code(request.form.get("username_code") or "")
     pin = (request.form.get("pin") or "").strip()
     active = (request.form.get("active") or "0") == "1"
 
@@ -2582,8 +2693,16 @@ def admin_employees_update():
         flash("Employee not found.", "error")
         return redirect(url_for("admin_employees"))
 
-    if not name or not pin:
-        flash("Name and PIN required.", "error")
+    if not name or not username_code or not pin:
+        flash("Name, username/code, and PIN required.", "error")
+        return redirect(url_for("admin_employees"))
+
+    other_code = Employee.query.filter(
+        func.lower(Employee.username_code) == username_code,
+        Employee.id != emp.id
+    ).first()
+    if other_code:
+        flash("That username/code is already in use.", "error")
         return redirect(url_for("admin_employees"))
 
     other = Employee.query.filter(Employee.pin == pin, Employee.id != emp.id).first()
@@ -2592,6 +2711,7 @@ def admin_employees_update():
         return redirect(url_for("admin_employees"))
 
     emp.name = name
+    emp.username_code = username_code
     emp.pin = pin
     emp.active = active
     db.session.commit()
