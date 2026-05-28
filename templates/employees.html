@@ -2,56 +2,322 @@
 {% block title %}Employees{% endblock %}
 
 {% block content %}
+  <style>
+    main {
+      max-width: 1240px;
+    }
+
+    .employees-page .card {
+      margin-bottom: 22px;
+      padding: 20px;
+    }
+
+    .employees-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    .employees-title {
+      font-size: 28px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+
+    .employees-subtitle {
+      color: #6b7280;
+      margin-top: 8px;
+      max-width: 620px;
+    }
+
+    .employee-actions,
+    .employee-filter {
+      display: flex;
+      gap: 16px;
+      flex-wrap: wrap;
+      align-items: end;
+    }
+
+    .field {
+      min-width: 190px;
+    }
+
+    .field-wide {
+      min-width: 300px;
+      flex: 1;
+    }
+
+    .field label {
+      display: block;
+      font-size: 13px;
+      font-weight: 700;
+      color: #4b5563;
+      margin-bottom: 7px;
+      min-height: 17px;
+    }
+
+    .employees-page input,
+    .employees-page select {
+      box-sizing: border-box;
+      min-height: 42px;
+    }
+
+    .employees-page .btn {
+      min-height: 42px;
+      padding: 10px 16px;
+      line-height: 1.2;
+    }
+
+    .add-employee-form {
+      display: grid;
+      grid-template-columns: minmax(260px, 1.5fr) minmax(190px, 1fr) minmax(140px, 0.7fr) minmax(140px, 0.75fr);
+      gap: 18px;
+      align-items: start;
+    }
+
+    .add-employee-form .field {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .add-employee-form input,
+    .add-employee-form select {
+      height: 42px;
+    }
+
+    .add-employee-form .helper-text {
+      min-height: 18px;
+    }
+
+    .add-employee-submit {
+      display: flex;
+      justify-content: flex-start;
+      margin-top: 10px;
+    }
+
+    .section-title {
+      font-size: 17px;
+      font-weight: 800;
+      margin-bottom: 16px;
+    }
+
+    .employee-table-wrap {
+      margin-top: 18px;
+      border: 1px solid #e5e7eb;
+      border-radius: 8px;
+      background: #ffffff;
+    }
+
+    .employee-list {
+      display: grid;
+      gap: 0;
+    }
+
+    .employee-list-header,
+    .employee-row {
+      display: grid;
+      grid-template-columns: minmax(210px, 1.45fr) minmax(170px, 1fr) minmax(105px, 0.55fr) minmax(135px, 0.75fr) minmax(170px, 1fr) minmax(150px, 0.75fr);
+      gap: 16px;
+      align-items: center;
+    }
+
+    .employee-list-header {
+      background: #f8fafc;
+      color: #64748b;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0;
+      text-transform: uppercase;
+      padding: 13px 16px;
+    }
+
+    .employee-row {
+      padding: 18px 16px;
+      min-height: 78px;
+      border-top: 1px solid #e5e7eb;
+    }
+
+    .employee-row:first-of-type {
+      border-top: 0;
+    }
+
+    .employee-cell {
+      min-width: 0;
+    }
+
+    .employee-cell-label {
+      display: none;
+      font-size: 12px;
+      font-weight: 800;
+      color: #4b5563;
+      margin-bottom: 5px;
+      text-transform: uppercase;
+    }
+
+    .employee-row input,
+    .employee-row select {
+      box-sizing: border-box;
+      width: 100%;
+      min-width: 0;
+    }
+
+    .employee-name-input {
+      min-width: 0;
+    }
+
+    .employee-code-input {
+      font-family: Consolas, "Courier New", monospace;
+      min-width: 0;
+    }
+
+    .employee-pin-input {
+      min-width: 0;
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    .employee-status-cell {
+      min-width: 0;
+    }
+
+    .last-activity {
+      color: #374151;
+      font-size: 14px;
+      line-height: 1.4;
+    }
+
+    .last-activity-muted {
+      color: #6b7280;
+      margin-top: 4px;
+    }
+
+    .helper-text {
+      font-size: 12px;
+      color: #6b7280;
+      margin-top: 7px;
+    }
+
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 12px;
+      font-weight: 700;
+      background: #dcfce7;
+      color: #166534;
+      margin-bottom: 7px;
+    }
+
+    .status-pill.inactive {
+      background: #f3f4f6;
+      color: #4b5563;
+    }
+
+    .row-actions {
+      display: flex;
+      justify-content: flex-end;
+      gap: 10px;
+      flex-wrap: nowrap;
+      align-items: center;
+    }
+
+    .row-actions .btn {
+      min-width: 74px;
+      padding-left: 12px;
+      padding-right: 12px;
+    }
+
+    @media (max-width: 980px) {
+      .employee-list-header {
+        display: none;
+      }
+
+      .employee-row {
+        grid-template-columns: minmax(180px, 1fr) minmax(150px, 1fr) minmax(92px, 0.6fr);
+      }
+
+      .employee-cell-label {
+        display: block;
+      }
+
+      .row-actions {
+        justify-content: flex-start;
+      }
+    }
+
+    @media (max-width: 760px) {
+      .add-employee-form {
+        grid-template-columns: 1fr;
+      }
+
+      .add-employee-submit {
+        margin-top: 12px;
+      }
+
+      .field,
+      .field-wide {
+        min-width: 100%;
+      }
+
+      .employee-actions .btn,
+      .employee-filter .btn {
+        flex: 1;
+        text-align: center;
+      }
+
+      .employee-row {
+        grid-template-columns: 1fr;
+      }
+
+      .row-actions {
+        flex-wrap: wrap;
+      }
+    }
+  </style>
+
+  <div class="employees-page">
   <div class="card">
-    <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+    <div class="employees-header">
       <div>
-        <div style="font-size:28px; font-weight:800;">Employees</div>
-        <div style="color:#6b7280; margin-top:6px;">Manage employee names, username/codes, PINs, and active status.</div>
+        <div class="employees-title">Employees</div>
+        <div class="employees-subtitle">Manage employee names, username/codes, readable PINs, and active status.</div>
       </div>
 
-      <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+      <div class="employee-actions">
         <a class="btn {% if view == 'active' %}btn-primary{% endif %}" href="{{ url_for('admin_employees') }}">Active</a>
-
-        <a class="btn {% if view == 'inactive' %}btn-primary{% endif %}"
-           href="{{ url_for('admin_employees', view='inactive') }}">
-          Inactive ({{ inactive_count }})
-        </a>
-
-        <a class="btn {% if view == 'all' %}btn-primary{% endif %}"
-           href="{{ url_for('admin_employees', view='all') }}">All</a>
-
+        <a class="btn {% if view == 'inactive' %}btn-primary{% endif %}" href="{{ url_for('admin_employees', view='inactive') }}">Inactive ({{ inactive_count }})</a>
+        <a class="btn {% if view == 'all' %}btn-primary{% endif %}" href="{{ url_for('admin_employees', view='all') }}">All</a>
         <a class="btn" href="{{ url_for('admin_import') }}">Bulk Import</a>
       </div>
     </div>
   </div>
 
-  <!-- 🔍 FILTER BAR -->
   <div class="card">
-    <form method="get" style="display:flex; gap:10px; flex-wrap:wrap; align-items:end;">
+    <form method="get" class="employee-filter">
       <input type="hidden" name="view" value="{{ view }}">
 
-      <div>
-        <div style="font-size:12px; color:#6b7280;">Search</div>
-        <input name="q" value="{{ q or '' }}" placeholder="Search name or username/code">
+      <div class="field field-wide">
+        <label for="employee-search">Search</label>
+        <input id="employee-search" name="q" value="{{ q or '' }}" placeholder="Name or username/code">
       </div>
 
-      <div>
-        <div style="font-size:12px; color:#6b7280;">Store</div>
-        <select name="store_id">
-          <option value="">All</option>
+      <div class="field">
+        <label for="employee-store">Store</label>
+        <select id="employee-store" name="store_id">
+          <option value="">All stores</option>
           {% for s in stores %}
-            <option value="{{ s.id }}" {% if store_id|string == s.id|string %}selected{% endif %}>
-              {{ s.name }}
-            </option>
+            <option value="{{ s.id }}" {% if store_id|string == s.id|string %}selected{% endif %}>{{ s.name }}</option>
           {% endfor %}
         </select>
       </div>
 
-      <div>
-        <div style="font-size:12px; color:#6b7280;">Sort</div>
-        <select name="sort">
-          <option value="last_name" {% if sort == 'last_name' %}selected{% endif %}>Last Name</option>
-          <option value="last_clock_in" {% if sort == 'last_clock_in' %}selected{% endif %}>Last Clock-In</option>
+      <div class="field">
+        <label for="employee-sort">Sort</label>
+        <select id="employee-sort" name="sort">
+          <option value="last_name" {% if sort == 'last_name' %}selected{% endif %}>Last name</option>
+          <option value="last_clock_in" {% if sort == 'last_clock_in' %}selected{% endif %}>Last clock-in</option>
         </select>
       </div>
 
@@ -59,94 +325,128 @@
     </form>
   </div>
 
-  <!-- ADD EMPLOYEE -->
   <div class="card">
-    <div style="font-size:16px; font-weight:800; margin-bottom:10px;">Add Employee</div>
-    <form method="post" style="display:grid; grid-template-columns: 2fr 1fr 1fr 160px; gap:10px;">
-      <input type="hidden" name="action" value="create"/>
+    <div class="section-title">Add Employee</div>
+    <form method="post" class="add-employee-form" id="add-employee-form">
+      <input type="hidden" name="action" value="create">
 
-      <input name="name" placeholder="Employee name" required>
-      <input name="username_code" placeholder="Username/code (unique)" required autocapitalize="none" autocomplete="off">
-      <input name="pin" type="password" placeholder="PIN (unique)" required autocomplete="new-password">
-      <button class="btn btn-primary" type="submit">Create</button>
+      <div class="field field-wide">
+        <label for="new-employee-name">Name</label>
+        <input id="new-employee-name" name="name" placeholder="John Smith" required>
+        <div class="helper-text">&nbsp;</div>
+      </div>
+
+      <div class="field">
+        <label for="new-employee-code">Username/code</label>
+        <input id="new-employee-code" name="username_code" placeholder="Auto: johns" autocapitalize="none" autocomplete="off">
+        <div class="helper-text">Leave blank to auto-generate.</div>
+      </div>
+
+      <div class="field">
+        <label for="new-employee-pin">PIN</label>
+        <input id="new-employee-pin" name="pin" type="text" inputmode="numeric" placeholder="1234" required autocomplete="off">
+        <div class="helper-text">&nbsp;</div>
+      </div>
+
+      <div class="field">
+        <label for="new-employee-active">Status</label>
+        <select id="new-employee-active" disabled>
+          <option selected>Active</option>
+        </select>
+        <div class="helper-text">New employees start active.</div>
+      </div>
     </form>
+    <div class="add-employee-submit">
+      <button class="btn btn-primary" type="submit" form="add-employee-form">Create Employee</button>
+    </div>
   </div>
 
-  <!-- EMPLOYEE TABLE -->
   <div class="card">
-    <div style="font-size:16px; font-weight:800;">Employee List</div>
+    <div class="employees-header">
+      <div class="section-title" style="margin-bottom:0;">Employee List</div>
+      <div class="helper-text">{{ employee_rows|length }} shown</div>
+    </div>
 
-    <table>
-      <thead>
-        <tr>
-          <th>Name</th>
-          <th>Username/Code</th>
-          <th>PIN</th>
-          <th>Status</th>
-          <th>Last Store</th>
-          <th>Last Clock-In</th>
-          <th style="text-align:right;">Actions</th>
-        </tr>
-      </thead>
+    <div class="employee-table-wrap">
+      <div class="employee-list">
+        <div class="employee-list-header">
+          <div>Name</div>
+          <div>Username/Code</div>
+          <div>PIN</div>
+          <div>Status</div>
+          <div>Last Activity</div>
+          <div style="text-align:right;">Actions</div>
+        </div>
 
-      <tbody>
         {% for row in employee_rows %}
           {% set e = row.employee %}
-          <tr>
-
-            <td>
+          <div class="employee-row">
+            <div class="employee-cell">
+              <div class="employee-cell-label">Name</div>
               <form method="post" action="{{ url_for('admin_employees_update') }}" id="save-emp-{{ e.id }}">
                 <input type="hidden" name="employee_id" value="{{ e.id }}">
-                <input name="name" value="{{ e.name }}" required>
+                <input class="employee-name-input" name="name" value="{{ e.name }}" required>
               </form>
-            </td>
+            </div>
 
-            <td>
-              <input form="save-emp-{{ e.id }}"
+            <div class="employee-cell">
+              <div class="employee-cell-label">Username/Code</div>
+              <input class="employee-code-input"
+                     form="save-emp-{{ e.id }}"
                      name="username_code"
                      value="{{ e.username_code or suggest_employee_username(e.name) }}"
                      required
                      autocapitalize="none"
                      autocomplete="off">
               {% if not e.username_code %}
-                <div style="font-size:12px; color:#6b7280; margin-top:4px;">Suggested from name</div>
+                <div class="helper-text">Suggested from name</div>
               {% endif %}
-            </td>
+            </div>
 
-            <td>
-              <input form="save-emp-{{ e.id }}" name="pin" type="password" value="{{ e.pin }}" required autocomplete="new-password">
-            </td>
+            <div class="employee-cell">
+              <div class="employee-cell-label">PIN</div>
+              <input class="employee-pin-input"
+                     form="save-emp-{{ e.id }}"
+                     name="pin"
+                     type="text"
+                     inputmode="numeric"
+                     value="{{ e.pin }}"
+                     required
+                     autocomplete="off">
+            </div>
 
-            <td>
+            <div class="employee-cell employee-status-cell">
+              <div class="employee-cell-label">Status</div>
+              <span class="status-pill {% if not e.active %}inactive{% endif %}">
+                {{ "Active" if e.active else "Inactive" }}
+              </span>
               <select form="save-emp-{{ e.id }}" name="active">
                 <option value="1" {% if e.active %}selected{% endif %}>Active</option>
                 <option value="0" {% if not e.active %}selected{% endif %}>Inactive</option>
               </select>
-            </td>
+            </div>
 
-            <td>
-              {{ row.last_store_name or "-" }}
-            </td>
+            <div class="employee-cell last-activity">
+              <div class="employee-cell-label">Last Activity</div>
+              <div>{{ row.last_store_name or "No store yet" }}</div>
+              <div class="last-activity-muted">{{ fmt_dt(row.last_clock_in) if row.last_clock_in else "No clock-in yet" }}</div>
+            </div>
 
-            <td>
-              {{ fmt_dt(row.last_clock_in) if row.last_clock_in else "-" }}
-            </td>
+            <div class="employee-cell">
+              <div class="employee-cell-label">Actions</div>
+              <div class="row-actions">
+                <button class="btn btn-primary" type="submit" form="save-emp-{{ e.id }}">Save</button>
 
-            <td style="text-align:right;">
-              <button class="btn btn-primary" type="submit" form="save-emp-{{ e.id }}">Save</button>
-
-              <form method="post" action="{{ url_for('admin_employees_delete') }}" style="display:inline;">
-                <input type="hidden" name="employee_id" value="{{ e.id }}">
-                <button class="btn btn-danger" type="submit"
-                        onclick="return confirm('Delete {{ e.name }}?')">
-                  Delete
-                </button>
-              </form>
-            </td>
-
-          </tr>
+                <form method="post" action="{{ url_for('admin_employees_delete') }}">
+                  <input type="hidden" name="employee_id" value="{{ e.id }}">
+                  <button class="btn btn-danger" type="submit" onclick="return confirm('Delete {{ e.name }}?')">Delete</button>
+                </form>
+              </div>
+            </div>
+          </div>
         {% endfor %}
-      </tbody>
-    </table>
+      </div>
+    </div>
+  </div>
   </div>
 {% endblock %}

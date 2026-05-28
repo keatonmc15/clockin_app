@@ -470,7 +470,13 @@ def normalize_employee_code(val: str) -> str:
     return (val or "").strip().lower()
 
 def suggest_employee_username(name: str) -> str:
-    base = re.sub(r"[^a-z0-9]+", "_", (name or "").strip().lower()).strip("_")
+    parts = re.findall(r"[a-z0-9]+", (name or "").strip().lower())
+    if len(parts) >= 2:
+        base = f"{parts[0]}{parts[-1][0]}"
+    elif parts:
+        base = parts[0]
+    else:
+        base = ""
     return base or "employee"
 
 def employee_code_exists(code: str, exclude_id: int | None = None) -> bool:
@@ -483,12 +489,12 @@ def employee_code_exists(code: str, exclude_id: int | None = None) -> bool:
         q = q.filter(Employee.id != exclude_id)
     return q.first() is not None
 
-def unique_employee_code_from_name(name: str) -> str:
+def unique_employee_code_from_name(name: str, exclude_id: int | None = None) -> str:
     base = suggest_employee_username(name)
     candidate = base
     suffix = 2
-    while employee_code_exists(candidate):
-        candidate = f"{base}_{suffix}"
+    while employee_code_exists(candidate, exclude_id=exclude_id):
+        candidate = f"{base}{suffix}"
         suffix += 1
     return candidate
 
@@ -2561,9 +2567,12 @@ def admin_employees():
             username_code = normalize_employee_code(request.form.get("username_code") or "")
             pin = (request.form.get("pin") or "").strip()
 
-            if not name or not username_code or not pin:
-                flash("Name, username/code, and PIN required.", "error")
+            if not name or not pin:
+                flash("Name and PIN required.", "error")
             else:
+                if not username_code:
+                    username_code = unique_employee_code_from_name(name)
+
                 if employee_code_exists(username_code):
                     flash("Username/code already in use.", "error")
                 elif Employee.query.filter_by(pin=pin).first():
