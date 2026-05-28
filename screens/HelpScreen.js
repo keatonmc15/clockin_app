@@ -14,7 +14,7 @@ import {
 import DeviceInfo from 'react-native-device-info';
 import BackgroundGeolocation from 'react-native-background-geolocation';
 
-const API_BASE = 'https://clockin-app.onrender.com';
+const API_BASE = __DEV__ ? 'http://10.0.2.2:5000' : 'https://clockin-app.onrender.com';
 const DEVICE_TOKEN = 'KeatonClockInMobile_Venom97Triad1997151506172024!';
 
 export default function HelpScreen({
@@ -22,6 +22,7 @@ export default function HelpScreen({
   store,
   isClockedIn,
   onClose,
+  usernameCode,
   pin,
 }) {
   const [gpsEnabled, setGpsEnabled] = useState(false);
@@ -36,9 +37,10 @@ export default function HelpScreen({
 
   async function reportIssue() {
     const pinClean = (pin || '').trim();
+    const codeClean = (usernameCode || '').trim().toLowerCase();
 
-    if (!pinClean) {
-      Alert.alert('Missing PIN', 'Please log in again and try.');
+    if (!codeClean || !pinClean) {
+      Alert.alert('Missing login', 'Please log in again and try.');
       return;
     }
 
@@ -92,6 +94,7 @@ export default function HelpScreen({
           'X-Device-Token': DEVICE_TOKEN,
         },
         body: JSON.stringify({
+          username_code: codeClean,
           pin: pinClean,
           message: (message || '').trim(),
           payload,

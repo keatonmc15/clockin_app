@@ -19,6 +19,7 @@ import BackgroundGeolocation, {
   State,
   GeofenceEvent,
 } from 'react-native-background-geolocation';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import {postBgEvent} from './src/bg/postBgEvent';
 import HelpScreen from './screens/HelpScreen';
@@ -33,17 +34,26 @@ type OpenShift = null | {
 };
 
 type StoreItem = {code: string; name: string};
+type Employee = {
+  id: number;
+  name: string;
+  username_code?: string;
+  suggested_username_code?: string;
+  active: boolean;
+};
 
 type StatusResponse = {
   ok: boolean;
-  employee?: {id: number; name: string; active: boolean};
+  employee?: Employee;
   open_shift: OpenShift;
   server_time_utc?: string;
   error?: string;
 };
 
-const API_BASE = 'https://clockin-app.onrender.com';
+const API_BASE = __DEV__ ? 'http://10.0.2.2:5000' : 'https://clockin-app.onrender.com';
 const DEVICE_TOKEN = 'KeatonClockInMobile_Venom97Triad1997151506172024!';
+const SESSION_KEY = 'clockin_mobile_employee_session_v1';
+const SELECTED_STORE_KEY = 'clockin_mobile_selected_store_v1';
 
 function headersJson() {
   return {
@@ -59,9 +69,12 @@ function deviceLabel() {
 export default function App() {
   const [bgState, setBgState] = useState<State | null>(null);
 
+  const [employeeCode, setEmployeeCode] = useState('');
   const [pin, setPin] = useState('');
   const [storeCode, setStoreCode] = useState('');
   const [loggedIn, setLoggedIn] = useState(false);
+  const [employee, setEmployee] = useState<Employee | null>(null);
+  const [sessionRestoring, setSessionRestoring] = useState(true);
 
   const [stores, setStores] = useState<StoreItem[]>([]);
   const [storeName, setStoreName] = useState<string>(''); // display name
@@ -133,11 +146,13 @@ export default function App() {
   }
 
   const canContinue = useMemo(() => {
-    return pin.trim().length > 0 && storeCode.trim().length > 0;
-  }, [pin, storeCode]);
+    return employeeCode.trim().length > 0 && pin.trim().length > 0;
+  }, [employeeCode, pin]);
 
   const openShift = status?.open_shift ?? null;
   const isClockedIn = !!openShift;
+  const lockedStoreName = isClockedIn ? openShift?.store_name || '' : '';
+  const canClockIn = loggedIn && !isClockedIn && storeCode.trim().length > 0;
 
   const log = (msg: string) => {
     const line = `${new Date().toLocaleTimeString()}  ${msg}`;
@@ -163,21 +178,43 @@ export default function App() {
     return {res, data};
   }
 
+  async function persistEmployeeSession(
+    code: string,
+    pinValue: string,
+    employeeValue: Employee,
+  ) {
+    await AsyncStorage.setItem(
+      SESSION_KEY,
+      JSON.stringify({
+        employeeCode: code,
+        pin: pinValue,
+        employee: employeeValue,
+      }),
+    );
+  }
+
+  async function persistSelectedStore(store: StoreItem) {
+    await AsyncStorage.setItem(SELECTED_STORE_KEY, JSON.stringify(store));
+  }
+
   // -----------------------------------
   // Status refresh (SOURCE OF TRUTH)
   // Returns the freshest status data (or null) so callers can make decisions.
   // -----------------------------------
   async function refreshStatus(
     opts?: {silent?: boolean},
+    identity?: {employeeCode: string; pin: string},
   ): Promise<StatusResponse | null> {
-    if (!loggedIn) return null;
-    const pinClean = pin.trim();
-    if (!pinClean) return null;
+    if (!loggedIn && !identity) return null;
+    const codeClean = (identity?.employeeCode ?? employeeCode).trim().toLowerCase();
+    const pinClean = (identity?.pin ?? pin).trim();
+    if (!codeClean || !pinClean) return null;
 
     if (!opts?.silent) setStatusLoading(true);
 
     try {
       const {res, data} = await apiPost('/api/mobile/status', {
+        username_code: codeClean,
         pin: pinClean,
         device_uuid: deviceUuidRef.current,
         device_label: deviceLabel(),
@@ -196,6 +233,9 @@ export default function App() {
 
       const fresh = data as StatusResponse;
       setStatus(fresh);
+      if (fresh.employee) {
+        setEmployee(fresh.employee);
+      }
 
       if (fresh?.open_shift) {
         log(
@@ -227,7 +267,7 @@ export default function App() {
     const id = setInterval(() => refreshStatus({silent: true}), 45000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loggedIn]);
+  }, [loggedIn, employeeCode, pin]);
 
   // Refresh status when app returns to foreground
   useEffect(() => {
@@ -239,7 +279,7 @@ export default function App() {
     const sub = AppState.addEventListener('change', onAppState);
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loggedIn, pin]);
+  }, [loggedIn, employeeCode, pin]);
 
   // Fetch stores (for picker; does not block login)
 useEffect(() => {
@@ -286,25 +326,126 @@ useEffect(() => {
   // eslint-disable-next-line react-hooks/exhaustive-deps
 }, []);
 
-  // -----------------------------------
-  // Login -> sync device + geofence
-  // -----------------------------------
-  async function continueLogin() {
-    if (!canContinue) {
-      Alert.alert('Missing info', 'Select a Store and enter your PIN.');
+  useEffect(() => {
+    (async () => {
+      try {
+        const [sessionRaw, storeRaw] = await Promise.all([
+          AsyncStorage.getItem(SESSION_KEY),
+          AsyncStorage.getItem(SELECTED_STORE_KEY),
+        ]);
+
+        if (storeRaw) {
+          const savedStore = JSON.parse(storeRaw);
+          if (savedStore?.code) {
+            setStoreCode(String(savedStore.code).trim().toLowerCase());
+            setStoreName(savedStore?.name || savedStore.code);
+          }
+        }
+
+        if (sessionRaw) {
+          const savedSession = JSON.parse(sessionRaw);
+          const codeClean = String(savedSession?.employeeCode || '').trim().toLowerCase();
+          const pinClean = String(savedSession?.pin || '').trim();
+          if (codeClean && pinClean) {
+            setEmployeeCode(codeClean);
+            setPin(pinClean);
+            if (savedSession?.employee) {
+              setEmployee(savedSession.employee);
+            }
+            setLoggedIn(true);
+            await refreshStatus(
+              {silent: true},
+              {employeeCode: codeClean, pin: pinClean},
+            );
+            log('✅ restored employee session');
+          }
+        }
+      } catch (e) {
+        log(`⚠️ session restore failed: ${String(e)}`);
+      } finally {
+        setSessionRestoring(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  async function syncGeofenceForStore(storeClean: string): Promise<boolean> {
+    const codeClean = employeeCode.trim().toLowerCase();
+    const pinClean = pin.trim();
+    if (!codeClean || !pinClean || !storeClean) return false;
+
+    try {
+      const {res, data} = await apiPost('/api/mobile/geofences', {
+        username_code: codeClean,
+        pin: pinClean,
+        qr_token: storeClean,
+        device_uuid: deviceUuidRef.current,
+        device_label: deviceLabel(),
+      });
+
+      if (!res.ok) {
+        const msg = data?.error || `Geofence sync failed (${res.status})`;
+        log(`❌ /api/mobile/geofences failed: ${msg}`);
+        Alert.alert('Geofence sync failed', msg);
+        return false;
+      }
+
+      const geofences = Array.isArray(data?.geofences) ? data.geofences : [];
+      if (geofences.length === 0) {
+        Alert.alert('Geofence sync failed', 'No geofences returned.');
+        return false;
+      }
+
+      await BackgroundGeolocation.removeGeofences().catch(() => null);
+      for (const gf of geofences) {
+        await BackgroundGeolocation.addGeofence(gf);
+      }
+
+      log(
+        `✅ geofences loaded: ${geofences
+          .map((g: any) => g.identifier)
+          .join(', ')}`,
+      );
+      return true;
+    } catch (e) {
+      log(`❌ geofence sync exception: ${String(e)}`);
+      Alert.alert('Geofence sync failed', 'Network error. Try again.');
+      return false;
+    }
+  }
+
+  async function selectStore(store: StoreItem) {
+    if (isClockedIn) {
+      Alert.alert('Store locked', 'Clock out before changing stores.');
       return;
     }
 
+    const clean = store.code.trim().toLowerCase();
+    setStoreCode(clean);
+    setStoreName(store.name);
+    setStorePickerVisible(false);
+    setStoreSearch('');
+    await persistSelectedStore({code: clean, name: store.name});
+    if (loggedIn) {
+      await syncGeofenceForStore(clean);
+    }
+  }
+
+  // -----------------------------------
+  // Login -> employee session
+  // -----------------------------------
+  async function continueLogin() {
+    if (!canContinue) {
+      Alert.alert('Missing info', 'Enter your username/code and PIN.');
+      return;
+    }
+
+    const codeClean = employeeCode.trim().toLowerCase();
     const pinClean = pin.trim();
-    const storeClean = storeCode.trim().toLowerCase();
 
-    // set display name if we have it (safe/no-op if not found)
-    const selected = stores.find(s => s.code === storeClean);
-    setStoreName(selected?.name || storeClean);
-
-    // 1) Touch /me (stores last-seen uuid/label)
     try {
       const {res, data} = await apiPost('/api/mobile/me', {
+        username_code: codeClean,
         pin: pinClean,
         device_uuid: deviceUuidRef.current,
         device_label: deviceLabel(),
@@ -318,69 +459,34 @@ useEffect(() => {
       }
 
       log(`✅ /api/mobile/me OK (emp=${data?.employee?.name || 'ok'})`);
+      setEmployeeCode(codeClean);
+      setEmployee(data.employee);
+      setLoggedIn(true);
+      setStatus({ok: true, employee: data.employee, open_shift: null});
+      await persistEmployeeSession(codeClean, pinClean, data.employee);
+      log('✅ employee session ready');
+      await refreshStatus(
+        {silent: true},
+        {employeeCode: codeClean, pin: pinClean},
+      );
     } catch (e) {
       log(`❌ /api/mobile/me exception: ${String(e)}`);
       Alert.alert('Login failed', 'Network error. Try again.');
       return;
     }
-
-    // 2) Fetch real geofence for this store + load into BG
-    try {
-      const {res, data} = await apiPost('/api/mobile/geofences', {
-        pin: pinClean,
-        qr_token: storeClean,
-        device_uuid: deviceUuidRef.current,
-        device_label: deviceLabel(),
-      });
-
-      if (!res.ok) {
-        const msg = data?.error || `Geofence sync failed (${res.status})`;
-        log(`❌ /api/mobile/geofences failed: ${msg}`);
-        Alert.alert('Geofence sync failed', msg);
-        return;
-      }
-
-      const geofences = Array.isArray(data?.geofences) ? data.geofences : [];
-      if (geofences.length === 0) {
-        Alert.alert('Geofence sync failed', 'No geofences returned.');
-        return;
-      }
-
-      await BackgroundGeolocation.removeGeofences().catch(() => null);
-      for (const gf of geofences) {
-        await BackgroundGeolocation.addGeofence(gf);
-      }
-
-      log(
-        `✅ geofences loaded: ${geofences
-          .map((g: any) => g.identifier)
-          .join(', ')}`,
-      );
-    } catch (e) {
-      log(`❌ geofence sync exception: ${String(e)}`);
-      Alert.alert('Geofence sync failed', 'Network error. Try again.');
-      return;
-    }
-
-    setStoreCode(storeClean);
-    setLoggedIn(true);
-    setStatus({ok: true, open_shift: null});
-    log(`✅ session ready store=${storeClean} pin=****`);
-
-    // Immediately sync status so UI reflects open shift (if any)
-    await refreshStatus();
   }
 
-  function logout() {
+  async function logout() {
     hidePrompt();
     setStorePickerVisible(false);
     setStoreSearch('');
     setLoggedIn(false);
+    setEmployee(null);
+    setEmployeeCode('');
     setPin('');
-    setStoreCode('');
-    setStoreName('');
     setStatus(null);
     clearExitAutoCloseTimer();
+    await AsyncStorage.removeItem(SESSION_KEY);
     log('👋 logged out');
   }
 
@@ -401,6 +507,14 @@ useEffect(() => {
 
   async function clockIn() {
     if (!loggedIn) return;
+    const storeClean = storeCode.trim().toLowerCase();
+    if (!storeClean) {
+      Alert.alert('Select a store', 'Choose your current store before clocking in.');
+      return;
+    }
+
+    const synced = await syncGeofenceForStore(storeClean);
+    if (!synced) return;
 
     const loc = await getFreshPosition();
     if (!loc) {
@@ -409,8 +523,9 @@ useEffect(() => {
     }
 
     const {res, data} = await apiPost('/api/mobile/clock-in', {
+      username_code: employeeCode.trim().toLowerCase(),
       pin: pin.trim(),
-      qr_token: storeCode.trim().toLowerCase(),
+      qr_token: storeClean,
       lat: loc.coords.latitude,
       lon: loc.coords.longitude,
       accuracy_m: loc.coords.accuracy,
@@ -426,6 +541,7 @@ useEffect(() => {
     }
 
     log(`✅ /api/mobile/clock-in OK shift_id=${data.shift_id}`);
+    hidePrompt();
     clearExitAutoCloseTimer();
     await refreshStatus();
   }
@@ -440,6 +556,7 @@ useEffect(() => {
     }
 
     const {res, data} = await apiPost('/api/mobile/clock-out', {
+      username_code: employeeCode.trim().toLowerCase(),
       pin: pin.trim(),
       lat: loc.coords.latitude,
       lon: loc.coords.longitude,
@@ -456,6 +573,7 @@ useEffect(() => {
     }
 
     log(`✅ /api/mobile/clock-out OK minutes=${data.minutes}`);
+    hidePrompt();
     clearExitAutoCloseTimer();
     await refreshStatus();
   }
@@ -476,6 +594,7 @@ useEffect(() => {
     }
 
     const {res, data} = await apiPost('/api/mobile/auto-exit-close', {
+      username_code: employeeCode.trim().toLowerCase(),
       pin: pin.trim(),
       lat: loc.coords.latitude,
       lon: loc.coords.longitude,
@@ -620,18 +739,18 @@ useEffect(() => {
 
     (async () => {
       const state = await BackgroundGeolocation.ready({
-        desiredAccuracy: BackgroundGeolocation.DESIRED_ACCURACY_HIGH,
+        desiredAccuracy: -1,
         distanceFilter: 25,
         stopOnTerminate: false,
         startOnBoot: true,
         debug: false,
-        logLevel: BackgroundGeolocation.LOG_LEVEL_OFF,
+        logLevel: 0,
         notification: {
           title: 'ClockIn',
           text: 'Location tracking enabled',
         },
         geofenceProximityRadius: 200,
-      });
+      } as any);
 
       setBgState(state);
       log(`ready enabled=${state.enabled} moving=${state.isMoving}`);
@@ -651,7 +770,7 @@ useEffect(() => {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loggedIn]);
+  }, [loggedIn, storeName, storeCode, employeeCode, pin, showDebug]);
 
   // -----------------------------------
   // UI
@@ -666,19 +785,24 @@ useEffect(() => {
     ? (openShift?.clock_in_local || openShift?.clock_in_utc || '')
     : '';
 
-  // ✅ derive employee + selectedStore objects for HelpScreen props (prevents undefined vars)
-  const employee = status?.employee || null;
-  const selectedStore = storeCode
-    ? {code: storeCode, name: storeName || storeCode}
-    : null;
+  const currentEmployee = status?.employee || employee;
+  const selectedStore = isClockedIn
+    ? {
+        code: storeCode,
+        name: openShift?.store_name || storeName || storeCode,
+      }
+    : storeCode
+      ? {code: storeCode, name: storeName || storeCode}
+      : null;
 
   if (showHelp) {
     return (
       <HelpScreen
-        employee={employee}
+        employee={currentEmployee}
         store={selectedStore}
         isClockedIn={isClockedIn}
         onClose={() => setShowHelp(false)}
+        usernameCode={employeeCode}
         pin={pin}
       />
     );
@@ -701,21 +825,19 @@ useEffect(() => {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Employee Login</Text>
 
-          <Text style={styles.label}>Store</Text>
-
-          <Pressable
-            onPress={() => setStorePickerVisible(true)}
-            style={[styles.input, styles.pickerInput]}>
-            <Text style={{fontSize: 16, opacity: storeName ? 1 : 0.45}}>
-              {storeName ? storeName : 'Tap to choose store'}
-            </Text>
-          </Pressable>
-
-          {stores.length === 0 ? (
-            <Text style={styles.lineMuted}>
-              Loading store list… If this never loads, check internet.
-            </Text>
+          {sessionRestoring ? (
+            <Text style={styles.lineMuted}>Restoring saved session…</Text>
           ) : null}
+
+          <Text style={styles.label}>Username / Code</Text>
+          <TextInput
+            value={employeeCode}
+            onChangeText={setEmployeeCode}
+            placeholder="employee code"
+            style={styles.input}
+            autoCapitalize="none"
+            autoCorrect={false}
+          />
 
           <Text style={styles.label}>PIN</Text>
           <TextInput
@@ -731,11 +853,11 @@ useEffect(() => {
             onPress={continueLogin}
             style={[styles.primaryBtn, !canContinue && styles.disabledBtn]}
             disabled={!canContinue}>
-            <Text style={styles.primaryBtnText}>Continue</Text>
+            <Text style={styles.primaryBtnText}>Log In</Text>
           </Pressable>
 
           <Text style={styles.hint}>
-            If clock-in fails, check that Location is on and you are inside the store.
+            After login, choose your current store before clocking in.
           </Text>
         </View>
       ) : (
@@ -748,11 +870,44 @@ useEffect(() => {
               </Pressable>
             </View>
 
-            <Text style={styles.line}>Store Code: {storeCode}</Text>
+            <Text style={styles.line}>
+              Employee: {currentEmployee?.name || employeeCode}
+            </Text>
             <Text style={styles.line}>Status: {statusText}</Text>
 
             {statusDetail ? <Text style={styles.line}>{statusDetail}</Text> : null}
             {clockInText ? <Text style={styles.line}>Clock-in: {clockInText}</Text> : null}
+
+            <Text style={styles.label}>Store</Text>
+            <Pressable
+              onPress={() => {
+                if (isClockedIn) {
+                  Alert.alert('Store locked', 'Clock out before changing stores.');
+                  return;
+                }
+                setStorePickerVisible(true);
+              }}
+              style={[
+                styles.input,
+                styles.pickerInput,
+                isClockedIn && styles.lockedInput,
+              ]}>
+              <Text style={{fontSize: 16, opacity: storeName || lockedStoreName ? 1 : 0.45}}>
+                {isClockedIn
+                  ? lockedStoreName || 'Store locked to open shift'
+                  : storeName || 'Tap to choose store'}
+              </Text>
+            </Pressable>
+
+            {isClockedIn ? (
+              <Text style={styles.lineMuted}>Store is locked while clocked in.</Text>
+            ) : stores.length === 0 ? (
+              <Text style={styles.lineMuted}>
+                Loading store list… If this never loads, check internet.
+              </Text>
+            ) : !storeCode ? (
+              <Text style={styles.lineMuted}>Select a store before clocking in.</Text>
+            ) : null}
 
             {status?.error ? <Text style={styles.lineMuted}>Status error: {status.error}</Text> : null}
             {statusLoading ? <Text style={styles.lineMuted}>Refreshing…</Text> : null}
@@ -760,7 +915,10 @@ useEffect(() => {
             <View style={{height: 12}} />
 
             {!isClockedIn ? (
-              <Pressable onPress={clockIn} style={styles.bigBtn}>
+              <Pressable
+                onPress={clockIn}
+                style={[styles.bigBtn, !canClockIn && styles.disabledBtn]}
+                disabled={!canClockIn}>
                 <Text style={styles.bigBtnText}>CLOCK IN</Text>
               </Pressable>
             ) : (
@@ -823,12 +981,7 @@ useEffect(() => {
               {filteredStores.map(s => (
                 <Pressable
                   key={s.code}
-                  onPress={() => {
-                    setStoreCode(s.code);
-                    setStoreName(s.name);
-                    setStorePickerVisible(false);
-                    setStoreSearch('');
-                  }}
+                  onPress={() => selectStore(s)}
                   style={styles.pickerRow}>
                   <Text style={styles.pickerRowTitle}>{s.name}</Text>
                   <Text style={styles.pickerRowSub}>{s.code}</Text>
@@ -912,6 +1065,7 @@ const styles = StyleSheet.create({
   },
 
   pickerInput: {justifyContent: 'center'},
+  lockedInput: {backgroundColor: '#f4f4f4'},
 
   primaryBtn: {
     backgroundColor: '#111',

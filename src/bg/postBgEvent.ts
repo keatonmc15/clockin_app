@@ -1,4 +1,4 @@
-const API_BASE = 'https://clockin-app.onrender.com';
+const API_BASE = __DEV__ ? 'http://10.0.2.2:5000' : 'https://clockin-app.onrender.com';
 const DEVICE_TOKEN = "KeatonClockInMobile_Venom97Triad1997151506172024!";
 
 type Meta = {
