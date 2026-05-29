@@ -2,14 +2,76 @@
 {% block title %}Admin Dashboard{% endblock %}
 
 {% block content %}
+  <style>
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.9fr);
+      gap: 22px;
+      align-items: start;
+    }
+
+    .dashboard-stack {
+      display: grid;
+      gap: 22px;
+    }
+
+    .section-heading {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 14px;
+      flex-wrap: wrap;
+      margin-bottom: 14px;
+    }
+
+    .section-title {
+      font-size: 18px;
+      font-weight: 800;
+      margin: 0;
+    }
+
+    .attention-card {
+      border: 1px solid #e5e7eb;
+      border-radius: 12px;
+      padding: 16px;
+      background: #ffffff;
+    }
+
+    .attention-card + .attention-card {
+      margin-top: 12px;
+    }
+
+    .quick-link-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .dashboard-table-wrap {
+      overflow-x: auto;
+    }
+
+    @media (max-width: 980px) {
+      .dashboard-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .quick-link-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+
   <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:16px; flex-wrap:wrap;">
+    <div class="page-header">
       <div>
-        <div class="h1" style="margin-bottom:4px;">Dashboard</div>
-        <div class="muted">Live view of who is working, who may need attention, and recent activity.</div>
+        <h1 class="page-title">Dashboard</h1>
+        <div class="page-subtitle">Live view of staffing, location exceptions, open issues, and recent clock activity.</div>
       </div>
 
-      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+      <div class="toolbar">
         <a class="btn btn-primary" href="{{ url_for('admin_employees') }}">Employees</a>
         <a class="btn" href="{{ url_for('admin_shifts') }}">Shifts</a>
         <a class="btn" href="{{ url_for('admin_payroll') }}">Payroll</a>
@@ -17,77 +79,142 @@
     </div>
   </div>
 
-  <div style="height:14px;"></div>
+  <div class="stat-grid">
+    <div class="stat-card">
+      <div class="stat-label">Open Shifts</div>
+      <div class="stat-value">{{ open_shift_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Open Issues</div>
+      <div class="stat-value">{{ open_issues_count }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Active Employees</div>
+      <div class="stat-value">{{ active_employees }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Stores</div>
+      <div class="stat-value">{{ stores }}</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-label">Shifts (7d)</div>
+      <div class="stat-value">{{ shifts_7d }}</div>
+    </div>
+  </div>
 
-  <div class="grid grid-2">
-    <!-- Currently Clocked In -->
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-        <div>
-          <div class="h1" style="margin:0;">Currently Clocked In</div>
-          <div class="muted">{{ open_shift_count }} open shift{% if open_shift_count != 1 %}s{% endif %}</div>
+  <div style="height:22px;"></div>
+
+  <div class="dashboard-grid">
+    <div class="dashboard-stack">
+      <div class="card">
+        <div class="section-heading">
+          <div>
+            <div class="section-title">Currently Clocked In</div>
+            <div class="muted">{{ open_shift_count }} open shift{% if open_shift_count != 1 %}s{% endif %}</div>
+          </div>
+          <a class="btn" href="{{ url_for('admin_shifts') }}">View all shifts</a>
         </div>
-        <a class="btn" href="{{ url_for('admin_shifts') }}">View all shifts</a>
+
+        {% if open_shift_rows %}
+          <div class="dashboard-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Store</th>
+                  <th>Clock In</th>
+                  <th>Time In</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in open_shift_rows %}
+                  <tr>
+                    <td>
+                      <span style="display:inline-flex; align-items:center; gap:8px;">
+                        <span class="status-dot" style="background:{{ row.status_color }};"></span>
+                        {{ row.employee_name }}
+                      </span>
+                    </td>
+                    <td>{{ row.store_name }}</td>
+                    <td>{{ fmt_dt(row.clock_in) }}</td>
+                    <td><strong>{{ row.human }}</strong></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="muted" style="padding:10px 0;">Nobody is currently clocked in.</div>
+        {% endif %}
       </div>
 
-      <div style="height:12px;"></div>
+      <div class="card">
+        <div class="section-heading">
+          <div>
+            <div class="section-title">Recent Activity</div>
+            <div class="muted">Most recent shift activity.</div>
+          </div>
+          <a class="btn" href="{{ url_for('admin_shifts') }}">Open shift list</a>
+        </div>
 
-      {% if open_shift_rows %}
-        <table>
-          <thead>
-            <tr>
-              <th style="min-width:180px;">Employee</th>
-              <th style="min-width:180px;">Store</th>
-              <th style="min-width:160px;">Clock In</th>
-              <th style="min-width:120px;">Time In</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in open_shift_rows %}
-              <tr>
-                <td>
-                  <span style="display:inline-flex; align-items:center; gap:8px;">
-                    <span style="width:10px; height:10px; border-radius:999px; background:{{ row.status_color }}; display:inline-block;"></span>
-                    {{ row.employee_name }}
-                  </span>
-                </td>
-                <td>{{ row.store_name }}</td>
-                <td>{{ fmt_dt(row.clock_in) }}</td>
-                <td><b>{{ row.human }}</b></td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      {% else %}
-        <div style="padding:12px 0;" class="muted">Nobody is currently clocked in.</div>
-      {% endif %}
+        {% if recent_shifts %}
+          <div class="dashboard-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Store</th>
+                  <th>Clock In</th>
+                  <th>Clock Out</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for s in recent_shifts %}
+                  <tr>
+                    <td>{{ s.employee.name if s.employee else "Unknown" }}</td>
+                    <td>{{ s.store.name if s.store else "Unknown" }}</td>
+                    <td>{{ fmt_dt(s.clock_in) if s.clock_in else "-" }}</td>
+                    <td>{{ fmt_dt(s.clock_out) if s.clock_out else "-" }}</td>
+                    <td>
+                      {% if s.clock_out %}
+                        Closed
+                      {% else %}
+                        <span style="color:#16a34a; font-weight:700;">Open</span>
+                      {% endif %}
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="muted" style="padding:10px 0;">No recent activity yet.</div>
+        {% endif %}
+      </div>
     </div>
 
-    <!-- Quick Summary -->
-    <div class="card">
-      <div class="h1" style="margin:0;">Quick Summary</div>
-      <div class="muted">Important things that need attention.</div>
+    <div class="dashboard-stack">
+      <div class="card">
+        <div class="section-title">Manager Attention</div>
+        <div class="muted" style="margin-top:4px; margin-bottom:14px;">Items that may need review today.</div>
 
-      <div style="height:16px;"></div>
+        <div class="attention-card">
+          <div class="stat-label">Outside Geofence</div>
+          <div class="stat-value" style="color:{% if outside_geofence_count > 0 %}#dc2626{% else %}inherit{% endif %};">{{ outside_geofence_count }}</div>
+        </div>
 
-      <div style="display:grid; gap:12px;">
-        <div style="padding:14px; border:1px solid #e5e7eb; border-radius:12px;">
-          <div class="muted" style="margin-bottom:4px;">Outside geofence</div>
-          <div style="font-size:28px; font-weight:800; color:{% if outside_geofence_count > 0 %}#dc2626{% else %}inherit{% endif %};">
-            {{ outside_geofence_count }}
+        <div class="attention-card">
+          <div class="stat-label">Open Issues</div>
+          <div class="stat-value">{{ open_issues_count }}</div>
+          <div style="margin-top:12px;">
+            <a class="btn {% if open_issues_count > 0 %}btn-primary{% endif %}" href="{{ url_for('admin_issues') }}">View issues</a>
           </div>
         </div>
 
-        <div style="padding:14px; border:1px solid #e5e7eb; border-radius:12px;">
-          <div class="muted" style="margin-bottom:4px;">Open issues</div>
-          <div style="font-size:28px; font-weight:800;">{{ open_issues_count }}</div>
-          <div style="height:10px;"></div>
-          <a class="btn {% if open_issues_count > 0 %}btn-primary{% endif %}" href="{{ url_for('admin_issues') }}">View issues</a>
-        </div>
-
-        <div style="padding:14px; border:1px solid #e5e7eb; border-radius:12px;">
-          <div class="muted" style="margin-bottom:4px;">Quick links</div>
-          <div style="display:flex; gap:10px; flex-wrap:wrap; margin-top:10px;">
+        <div class="attention-card">
+          <div class="stat-label">Quick Links</div>
+          <div class="quick-link-grid" style="margin-top:12px;">
             <a class="btn" href="{{ url_for('admin_stores') }}">Stores</a>
             <a class="btn" href="{{ url_for('admin_import') }}">Import</a>
             <a class="btn" href="{{ url_for('admin_audit') }}">Audit</a>
@@ -95,168 +222,106 @@
           </div>
         </div>
       </div>
+
+      <div class="card">
+        <div class="section-title">Employees Outside Geofence</div>
+        <div class="muted" style="margin-top:4px; margin-bottom:14px;">Based on the most recent ping for each open shift.</div>
+
+        {% if outside_geofence_rows %}
+          <div class="dashboard-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Store</th>
+                  <th>Distance</th>
+                  <th>Last Ping</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in outside_geofence_rows %}
+                  <tr>
+                    <td style="color:#dc2626; font-weight:700;">{{ row.employee_name }}</td>
+                    <td>{{ row.store_name }}</td>
+                    <td>
+                      {% if row.dist_m is not none %}
+                        {{ row.dist_m }} m
+                      {% else %}
+                        -
+                      {% endif %}
+                    </td>
+                    <td>{{ fmt_dt(row.ping_at) if row.ping_at else "-" }}</td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="muted" style="padding:10px 0;">No currently clocked-in employees are outside the geofence.</div>
+        {% endif %}
+      </div>
+
+      <div class="card">
+        <div class="section-title">Longest Open Shifts</div>
+        <div class="muted" style="margin-top:4px; margin-bottom:14px;">Open shifts sorted from longest to shortest.</div>
+
+        {% if longest_open_shift_rows %}
+          <div class="dashboard-table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Employee</th>
+                  <th>Store</th>
+                  <th>Clock In</th>
+                  <th>Time In</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in longest_open_shift_rows %}
+                  <tr>
+                    <td>
+                      <span style="display:inline-flex; align-items:center; gap:8px;">
+                        <span class="status-dot" style="background:{{ row.status_color }};"></span>
+                        {{ row.employee_name }}
+                      </span>
+                    </td>
+                    <td>{{ row.store_name }}</td>
+                    <td>{{ fmt_dt(row.clock_in) }}</td>
+                    <td><strong>{{ row.human }}</strong></td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+        {% else %}
+          <div class="muted" style="padding:10px 0;">No open shifts right now.</div>
+        {% endif %}
+      </div>
     </div>
   </div>
 
-  <div style="height:14px;"></div>
-
-  <div class="grid grid-2">
-    <!-- Outside Geofence List -->
-    <div class="card">
-      <div class="h1" style="margin:0;">Employees Outside Geofence</div>
-      <div class="muted">Based on the most recent ping for each open shift.</div>
-
-      <div style="height:12px;"></div>
-
-      {% if outside_geofence_rows %}
-        <table>
-          <thead>
-            <tr>
-              <th style="min-width:170px;">Employee</th>
-              <th style="min-width:170px;">Store</th>
-              <th style="min-width:110px;">Distance</th>
-              <th style="min-width:160px;">Last Ping</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in outside_geofence_rows %}
-              <tr>
-                <td style="color:#dc2626; font-weight:700;">{{ row.employee_name }}</td>
-                <td>{{ row.store_name }}</td>
-                <td>
-                  {% if row.dist_m is not none %}
-                    {{ row.dist_m }} m
-                  {% else %}
-                    -
-                  {% endif %}
-                </td>
-                <td>{{ fmt_dt(row.ping_at) if row.ping_at else "-" }}</td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      {% else %}
-        <div style="padding:12px 0;" class="muted">No currently clocked-in employees are outside the geofence.</div>
-      {% endif %}
-    </div>
-
-    <!-- Longest Open Shifts -->
-    <div class="card">
-      <div class="h1" style="margin:0;">Longest Open Shifts</div>
-      <div class="muted">Open shifts sorted from longest to shortest.</div>
-
-      <div style="height:12px;"></div>
-
-      {% if longest_open_shift_rows %}
-        <table>
-          <thead>
-            <tr>
-              <th style="min-width:170px;">Employee</th>
-              <th style="min-width:170px;">Store</th>
-              <th style="min-width:160px;">Clock In</th>
-              <th style="min-width:120px;">Time In</th>
-            </tr>
-          </thead>
-          <tbody>
-            {% for row in longest_open_shift_rows %}
-              <tr>
-                <td>
-                  <span style="display:inline-flex; align-items:center; gap:8px;">
-                    <span style="width:10px; height:10px; border-radius:999px; background:{{ row.status_color }}; display:inline-block;"></span>
-                    {{ row.employee_name }}
-                  </span>
-                </td>
-                <td>{{ row.store_name }}</td>
-                <td>{{ fmt_dt(row.clock_in) }}</td>
-                <td><b>{{ row.human }}</b></td>
-              </tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      {% else %}
-        <div style="padding:12px 0;" class="muted">No open shifts right now.</div>
-      {% endif %}
-    </div>
-  </div>
-
-  <div style="height:14px;"></div>
-
-  <!-- Recent Activity -->
   <div class="card">
-    <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap;">
-      <div>
-        <div class="h1" style="margin:0;">Recent Activity</div>
-        <div class="muted">Most recent shift activity.</div>
+    <div class="section-title" style="margin-bottom:14px;">System Stats</div>
+    <div class="stat-grid">
+      <div class="stat-card">
+        <div class="stat-label">Total Employees</div>
+        <div class="stat-value">{{ total_employees }}</div>
       </div>
-      <a class="btn" href="{{ url_for('admin_shifts') }}">Open shift list</a>
-    </div>
-
-    <div style="height:12px;"></div>
-
-    {% if recent_shifts %}
-      <table>
-        <thead>
-          <tr>
-            <th style="min-width:180px;">Employee</th>
-            <th style="min-width:180px;">Store</th>
-            <th style="min-width:160px;">Clock In</th>
-            <th style="min-width:160px;">Clock Out</th>
-            <th style="min-width:120px;">Status</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for s in recent_shifts %}
-            <tr>
-              <td>{{ s.employee.name if s.employee else "Unknown" }}</td>
-              <td>{{ s.store.name if s.store else "Unknown" }}</td>
-              <td>{{ fmt_dt(s.clock_in) if s.clock_in else "-" }}</td>
-              <td>{{ fmt_dt(s.clock_out) if s.clock_out else "-" }}</td>
-              <td>
-                {% if s.clock_out %}
-                  Closed
-                {% else %}
-                  <span style="color:#16a34a; font-weight:700;">Open</span>
-                {% endif %}
-              </td>
-            </tr>
-          {% endfor %}
-        </tbody>
-      </table>
-    {% else %}
-      <div style="padding:12px 0;" class="muted">No recent activity yet.</div>
-    {% endif %}
-  </div>
-
-  <div style="height:14px;"></div>
-
-  <!-- Condensed Stats -->
-  <div class="card">
-    <div style="font-size:16px; font-weight:800; margin-bottom:10px;">System Stats</div>
-
-    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap:10px;">
-      <div style="padding:12px; border:1px solid #e5e7eb; border-radius:10px;">
-        <div class="muted">Total Employees</div>
-        <div style="font-size:22px; font-weight:800;">{{ total_employees }}</div>
+      <div class="stat-card">
+        <div class="stat-label">Active</div>
+        <div class="stat-value">{{ active_employees }}</div>
       </div>
-
-      <div style="padding:12px; border:1px solid #e5e7eb; border-radius:10px;">
-        <div class="muted">Active</div>
-        <div style="font-size:22px; font-weight:800;">{{ active_employees }}</div>
+      <div class="stat-card">
+        <div class="stat-label">Inactive</div>
+        <div class="stat-value">{{ inactive_employees }}</div>
       </div>
-
-      <div style="padding:12px; border:1px solid #e5e7eb; border-radius:10px;">
-        <div class="muted">Inactive</div>
-        <div style="font-size:22px; font-weight:800;">{{ inactive_employees }}</div>
+      <div class="stat-card">
+        <div class="stat-label">Stores</div>
+        <div class="stat-value">{{ stores }}</div>
       </div>
-
-      <div style="padding:12px; border:1px solid #e5e7eb; border-radius:10px;">
-        <div class="muted">Stores</div>
-        <div style="font-size:22px; font-weight:800;">{{ stores }}</div>
-      </div>
-
-      <div style="padding:12px; border:1px solid #e5e7eb; border-radius:10px;">
-        <div class="muted">Shifts (7d)</div>
-        <div style="font-size:22px; font-weight:800;">{{ shifts_7d }}</div>
+      <div class="stat-card">
+        <div class="stat-label">Shifts (7d)</div>
+        <div class="stat-value">{{ shifts_7d }}</div>
       </div>
     </div>
   </div>

@@ -31,7 +31,6 @@
       </div>
 
       <div style="display:flex; gap:10px; flex-wrap:wrap;">
-        <a class="btn" href="{{ url_for('admin_dashboard') }}">Back to Dashboard</a>
         <a class="btn btn-primary" href="{{ url_for('admin_payroll', start=start, end=end, format='csv') }}">Export CSV</a>
         <a class="btn btn-primary" href="{{ url_for('admin_payroll', start=start, end=end, format='xlsx') }}">Export XLSX</a>
       </div>

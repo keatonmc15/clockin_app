@@ -12,7 +12,8 @@
       --text: #111827;
       --muted: #6b7280;
       --line: #e5e7eb;
-      --primary: #1d4ed8;
+      --primary: #1f4f82;
+      --accent: #c89b3c;
     }
 
     body {
@@ -24,6 +25,8 @@
 
     .navbar {
       box-shadow: 0 1px 0 rgba(255,255,255,0.06);
+      background: #0f172a !important;
+      min-height: 72px;
     }
 
     .navbar .container,
@@ -32,8 +35,40 @@
     }
 
     .navbar-brand {
+      display: inline-flex;
+      align-items: center;
+      gap: 12px;
       font-weight: 800;
       letter-spacing: 0;
+    }
+
+    .brand-logo {
+      width: auto;
+      height: 54px;
+      max-width: 120px;
+      object-fit: contain;
+      border-radius: 8px;
+      background: transparent;
+      padding: 0;
+      border: 0;
+    }
+
+    .brand-copy {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+
+    .brand-name {
+      font-size: 16px;
+      line-height: 1.1;
+    }
+
+    .brand-subtitle {
+      color: #cbd5e1;
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.1;
     }
 
     .navbar .btn {
@@ -101,6 +136,12 @@
         justify-content: flex-start;
       }
 
+      .brand-logo {
+        width: auto;
+        height: 46px;
+        max-width: 104px;
+      }
+
       .container {
         padding-left: 16px;
         padding-right: 16px;
@@ -112,7 +153,13 @@
 
 <nav class="navbar navbar-expand-lg navbar-dark bg-dark">
   <div class="container">
-    <a class="navbar-brand" href="{{ url_for('admin_dashboard') }}">Clock-In Admin</a>
+    <a class="navbar-brand" href="{{ url_for('admin_dashboard') }}">
+      <img class="brand-logo" src="{{ url_for('static', filename='img/company-logo.png') }}" alt="C&C logo">
+      <span class="brand-copy">
+        <span class="brand-name">C&amp;C ClockIn</span>
+        <span class="brand-subtitle">Operations Admin</span>
+      </span>
+    </a>
     <div class="d-flex gap-2">
       <a class="btn btn-sm btn-outline-light" href="{{ url_for('admin_employees') }}">Employees</a>
       <a class="btn btn-sm btn-outline-light" href="{{ url_for('admin_stores') }}">Stores</a>
