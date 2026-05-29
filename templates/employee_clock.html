@@ -4,536 +4,682 @@
   <meta charset="utf-8"/>
   <meta name="viewport" content="width=device-width, initial-scale=1"/>
   <title>Employee Time Clock</title>
-  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 
   <style>
-    body { background: #f6f7fb; }
-    .brand-card { border: 0; border-radius: 18px; }
-    .brand-logo { max-height: 56px; width: auto; }
-    .big-btn { padding: 14px 16px; font-size: 1.15rem; border-radius: 14px; }
-    .muted { color: #6c757d; }
-    .status-box { border-radius: 14px; }
-    .tiny { font-size: .9rem; }
-    code { font-size: .95em; }
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --line-strong: #d1d5db;
+      --nav: #0f172a;
+      --primary: #1f4f82;
+      --primary-hover: #183f68;
+      --success: #15803d;
+      --danger: #dc2626;
+      --warning: #b45309;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, Helvetica, sans-serif;
+      line-height: 1.45;
+    }
+
+    .topbar {
+      background: var(--nav);
+      color: #ffffff;
+      padding: 14px 20px;
+    }
+
+    .topbar-inner {
+      max-width: 760px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .logo {
+      height: 54px;
+      width: auto;
+      max-width: 130px;
+      object-fit: contain;
+    }
+
+    .brand-title {
+      font-size: 18px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+
+    .brand-subtitle {
+      color: #cbd5e1;
+      font-size: 13px;
+      font-weight: 700;
+      margin-top: 2px;
+    }
+
+    main {
+      max-width: 760px;
+      margin: 28px auto;
+      padding: 0 18px 28px;
+    }
+
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 22px;
+      box-shadow: 0 1px 2px rgba(15,23,42,0.04);
+      margin-bottom: 18px;
+    }
+
+    .page-title {
+      font-size: 28px;
+      font-weight: 800;
+      margin: 0;
+      line-height: 1.1;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .hidden {
+      display: none !important;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+      margin-top: 18px;
+    }
+
+    .field-full {
+      grid-column: 1 / -1;
+    }
+
+    label {
+      display: block;
+      color: #4b5563;
+      font-size: 13px;
+      font-weight: 800;
+      margin-bottom: 7px;
+    }
+
+    input,
+    select {
+      width: 100%;
+      min-height: 44px;
+      border: 1px solid var(--line-strong);
+      border-radius: 10px;
+      padding: 10px 12px;
+      font-size: 16px;
+      color: var(--text);
+      background: #ffffff;
+    }
+
+    input:focus,
+    select:focus {
+      outline: 2px solid rgba(31,79,130,0.16);
+      border-color: #93c5fd;
+    }
+
+    input:disabled,
+    select:disabled {
+      background: #f3f4f6;
+      color: #4b5563;
+    }
+
+    .actions {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 18px;
+    }
+
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 48px;
+      border-radius: 10px;
+      border: 1px solid var(--line-strong);
+      background: #ffffff;
+      color: var(--text);
+      font-size: 16px;
+      font-weight: 800;
+      cursor: pointer;
+      padding: 12px 14px;
+    }
+
+    .btn-primary {
+      background: var(--primary);
+      border-color: var(--primary);
+      color: #ffffff;
+    }
+
+    .btn-primary:hover { background: var(--primary-hover); }
+
+    .btn-danger {
+      background: var(--danger);
+      border-color: var(--danger);
+      color: #ffffff;
+    }
+
+    .btn-secondary:hover {
+      background: #f8fafc;
+    }
+
+    .btn:disabled {
+      cursor: not-allowed;
+      opacity: 0.45;
+    }
+
+    .status {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      background: #f8fafc;
+      margin-top: 16px;
+    }
+
+    .status.success {
+      background: #ecfdf5;
+      border-color: #bbf7d0;
+      color: #14532d;
+    }
+
+    .status.warning {
+      background: #fffbeb;
+      border-color: #fde68a;
+      color: #78350f;
+    }
+
+    .status.danger {
+      background: #fef2f2;
+      border-color: #fecaca;
+      color: #7f1d1d;
+    }
+
+    .shift-panel {
+      display: none;
+      border: 1px solid #bbf7d0;
+      background: #ecfdf5;
+      color: #14532d;
+      border-radius: 12px;
+      padding: 14px;
+      margin-top: 16px;
+    }
+
+    .shift-panel.visible {
+      display: block;
+    }
+
+    .session-panel {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      border: 1px solid var(--line);
+      background: #f8fafc;
+      border-radius: 12px;
+      padding: 14px;
+      margin-top: 18px;
+    }
+
+    .session-name {
+      font-weight: 800;
+      margin-top: 2px;
+    }
+
+    .small {
+      font-size: 13px;
+    }
+
+    @media (max-width: 640px) {
+      main { margin-top: 18px; }
+      .card { padding: 18px; }
+      .form-grid,
+      .actions {
+        grid-template-columns: 1fr;
+      }
+      .session-panel {
+        align-items: stretch;
+        flex-direction: column;
+      }
+      .logo {
+        height: 46px;
+        max-width: 112px;
+      }
+    }
   </style>
 </head>
+
 <body>
-  <div class="container py-4" style="max-width: 520px;">
-    <div class="card shadow-sm brand-card">
-      <div class="card-body p-4">
-
-        <div class="d-flex align-items-center justify-content-between mb-3">
-          <img class="brand-logo" src="{{ url_for('static', filename='img/logo.png') }}" alt="Company Logo">
-          <span class="badge text-bg-dark">Time Clock</span>
-        </div>
-
-        <h2 class="mb-1">Employee Time Clock</h2>
-        <div class="muted mb-3">Enter your PIN and Store Code.</div>
-
-        <!-- CLOCKED-IN BANNER -->
-        <div id="clockedBanner" class="alert alert-success status-box tiny d-none" role="alert">
-          <div class="fw-semibold">CLOCKED IN: <span id="clockedName">Employee</span></div>
-          <div class="tiny">Come back here to clock out when your shift ends.</div>
-        </div>
-
-        <div class="mb-3">
-          <label class="form-label" for="pin">PIN</label>
-          <input id="pin" class="form-control form-control-lg" inputmode="numeric" placeholder="Enter your PIN" />
-        </div>
-
-        <div class="mb-2">
-          <label class="form-label" for="store_code">Store Code</label>
-
-          <div class="position-relative">
-            <input
-              id="store_code"
-              class="form-control form-control-lg"
-              placeholder="Start typing store name or code…"
-              autocomplete="off"
-              autocapitalize="characters"
-              spellcheck="false"
-            />
-
-            <div id="storeSuggest"
-                 class="list-group position-absolute w-100 shadow-sm d-none"
-                 style="z-index: 20; max-height: 260px; overflow:auto;">
-            </div>
-          </div>
-
-          <div id="storeName" class="tiny muted mt-1"></div>
-        </div>
-
-        <div class="d-grid gap-2 mt-3">
-          <button id="btnClockIn" class="btn btn-dark big-btn" onclick="doClockIn()">Clock In</button>
-          <button id="btnClockOut" class="btn btn-outline-dark big-btn" onclick="doClockOut()">Clock Out</button>
-        </div>
-
-        <div id="status" class="alert alert-light status-box mt-3 mb-0 tiny" role="alert">
-          Ready.
-        </div>
-
-        <!-- GPS DEBUG LINE -->
-        <div class="mt-2 tiny muted">
-          <div><span class="fw-semibold">GPS:</span> <span id="gpsPerm">—</span></div>
-          <div>
-            <span class="fw-semibold">Accuracy:</span>
-            <span id="gpsAcc">—</span>
-            <span id="gpsTime" class="ms-2"></span>
-          </div>
-        </div>
-
+  <header class="topbar">
+    <div class="topbar-inner">
+      <img class="logo" src="{{ url_for('static', filename='img/company-logo.png') }}" alt="C&C logo">
+      <div>
+        <div class="brand-title">C&amp;C ClockIn</div>
+        <div class="brand-subtitle">Employee Time Clock</div>
       </div>
     </div>
+  </header>
 
-    <div class="text-center muted tiny mt-3">
-      Tip: This phone will remember your last Store Code automatically.
+  <main>
+    <section class="card">
+      <h1 class="page-title">Employee Time Clock</h1>
+      <div class="muted" style="margin-top:8px;">Log in with your employee code and PIN to start.</div>
+
+      <div id="loginPanel">
+        <div class="form-grid">
+          <div>
+            <label for="employee_code">Username / Code</label>
+            <input id="employee_code" autocomplete="username" autocapitalize="none" placeholder="johns">
+          </div>
+
+          <div>
+            <label for="pin">PIN</label>
+            <input id="pin" type="password" inputmode="numeric" autocomplete="current-password" placeholder="1234">
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="btnLogin" class="btn btn-primary" type="button" onclick="loginEmployee()">Log In</button>
+        </div>
+      </div>
+
+      <div id="sessionPanel" class="session-panel hidden">
+        <div>
+          <div class="muted small">Signed in as</div>
+          <div id="employeeName" class="session-name">Employee</div>
+        </div>
+        <button id="btnLogout" class="btn btn-secondary" type="button" onclick="logoutEmployee()">Change Employee</button>
+      </div>
+
+      <div id="appPanel" class="hidden">
+        <div id="shiftPanel" class="shift-panel">
+          <strong id="shiftTitle">Clocked in</strong>
+          <div class="small" id="shiftDetails"></div>
+        </div>
+
+        <div class="form-grid">
+          <div class="field-full">
+          <label for="store_select">Store / Location</label>
+          <select id="store_select">
+            <option value="">Loading stores...</option>
+          </select>
+          <div id="storeHelp" class="muted small" style="margin-top:7px;">Select your current store before clocking in.</div>
+          </div>
+        </div>
+
+        <div class="actions">
+          <button id="btnClockIn" class="btn btn-primary" type="button" onclick="clockIn()">Clock In</button>
+          <button id="btnClockOut" class="btn btn-danger" type="button" onclick="clockOut()">Clock Out</button>
+        </div>
+      </div>
+
+      <div id="status" class="status small">Ready.</div>
+    </section>
+
+    <div class="muted small" style="text-align:center;">
+      Store selection is locked while clocked in. Clock-out uses the store tied to your open shift.
     </div>
-  </div>
+  </main>
 
 <script>
-  const STORES = {{ stores|tojson }};
+  const INITIAL_STORES = {{ stores|tojson }};
 
-  // ---- Local state keys ----
-  const LS_CLOCKED_IN = "clocked_in";
-  const LS_CLOCKED_NAME = "clocked_in_name";
-  const LS_CLOCKED_SHIFT_ID = "clocked_in_shift_id";
-  const LS_LAST_STORE = "last_store_code";
-  const LS_LAST_PIN = "last_pin"; // used for periodic pings
+  const LS_CODE = "web_employee_code";
+  const LS_STORE_CODE = "web_selected_store_code";
+  const LS_STORE_NAME = "web_selected_store_name";
+  const LS_OPEN_SHIFT = "web_open_shift";
 
+  let STORES = [];
   let BUSY = false;
+  let openShift = null;
+  let currentEmployee = null;
 
-  // ---- Ping config ----
-  const PING_EVERY_MS = 15 * 60 * 1000;   // 15 minutes
-  const PING_MAX_AGE_MS = 60 * 1000;      // allow cached GPS up to 1 minute for pings
-  let pingTimer = null;
+  const elCode = () => document.getElementById("employee_code");
+  const elPin = () => document.getElementById("pin");
+  const elStore = () => document.getElementById("store_select");
+  const elStatus = () => document.getElementById("status");
 
-  // ---- Store autocomplete (API-backed) ----
-  let LAST_SUGGEST = [];
-  let suggestTimer = null;
-
-  function suggestBox() { return document.getElementById("storeSuggest"); }
-
-  function hideSuggest() {
-    const box = suggestBox();
-    box.classList.add("d-none");
-    box.innerHTML = "";
+  function normalizeCode(value) {
+    return String(value || "").trim().toLowerCase();
   }
 
-  function showSuggest(items) {
-    const box = suggestBox();
-    if (!items || !items.length) return hideSuggest();
-
-    box.innerHTML = items.map(s => {
-      const label = `${s.code} — ${s.name}`;
-      return `<button type="button"
-                      class="list-group-item list-group-item-action"
-                      data-code="${s.code}"
-                      data-name="${s.name}">${label}</button>`;
-    }).join("");
-
-    box.classList.remove("d-none");
+  function setStatus(message, kind = "") {
+    const el = elStatus();
+    el.className = `status small ${kind}`.trim();
+    el.textContent = message;
   }
 
-  async function fetchStoreSuggest(q) {
-    try {
-      const res = await fetch(`/api/stores/suggest?q=${encodeURIComponent(q)}`);
-      if (!res.ok) return [];
-      return await res.json();
-    } catch (e) {
-      return [];
-    }
+  function selectedStore() {
+    const code = normalizeCode(elStore().value);
+    return STORES.find(s => normalizeCode(s.code) === code) || null;
   }
 
-  function isClockedIn() {
-    return localStorage.getItem(LS_CLOCKED_IN) === "1";
+  function persistIdentity() {
+    const code = normalizeCode(elCode().value);
+    if (code) localStorage.setItem(LS_CODE, code);
   }
 
-  function setClockedIn(on, payload = {}) {
-    if (on) {
-      localStorage.setItem(LS_CLOCKED_IN, "1");
-      if (payload.name) localStorage.setItem(LS_CLOCKED_NAME, payload.name);
-      if (payload.shift_id !== undefined && payload.shift_id !== null) {
-        localStorage.setItem(LS_CLOCKED_SHIFT_ID, String(payload.shift_id));
+  function clearIdentity() {
+    localStorage.removeItem(LS_CODE);
+    localStorage.removeItem(LS_OPEN_SHIFT);
+    currentEmployee = null;
+    openShift = null;
+  }
+
+  function persistStore(store) {
+    if (!store) return;
+    localStorage.setItem(LS_STORE_CODE, normalizeCode(store.code));
+    localStorage.setItem(LS_STORE_NAME, store.name || store.code);
+  }
+
+  function setOpenShift(shift) {
+    openShift = shift || null;
+    if (openShift) {
+      localStorage.setItem(LS_OPEN_SHIFT, JSON.stringify(openShift));
+      if (openShift.store_code) {
+        localStorage.setItem(LS_STORE_CODE, normalizeCode(openShift.store_code));
+        localStorage.setItem(LS_STORE_NAME, openShift.store_name || openShift.store_code);
       }
     } else {
-      localStorage.removeItem(LS_CLOCKED_IN);
-      localStorage.removeItem(LS_CLOCKED_NAME);
-      localStorage.removeItem(LS_CLOCKED_SHIFT_ID);
+      localStorage.removeItem(LS_OPEN_SHIFT);
     }
     updateUI();
   }
 
-  function setStatus(msg, kind="light") {
-    const el = document.getElementById("status");
-    el.className = `alert alert-${kind} status-box mt-3 mb-0 tiny`;
-    el.textContent = msg;
-  }
-
-  // ---- GPS debug helpers ----
-  function setGpsInfo({ permText="—", accuracyM=null, ts=null } = {}) {
-    const permEl = document.getElementById("gpsPerm");
-    const accEl = document.getElementById("gpsAcc");
-    const timeEl = document.getElementById("gpsTime");
-
-    permEl.textContent = permText;
-
-    if (accuracyM === null || accuracyM === undefined) {
-      accEl.textContent = "—";
-    } else {
-      accEl.textContent = `±${Math.round(accuracyM)} m`;
-    }
-
-    if (!ts) {
-      timeEl.textContent = "";
-    } else {
-      const d = new Date(ts);
-      timeEl.textContent = `(${d.toLocaleTimeString()})`;
-    }
-  }
-
-  async function refreshGpsPermission() {
-    if (!navigator.geolocation) {
-      setGpsInfo({ permText: "Not supported" });
-      return;
-    }
-
-    if (!("permissions" in navigator) || !navigator.permissions.query) {
-      setGpsInfo({ permText: "Unknown" });
-      return;
-    }
-
-    try {
-      const perm = await navigator.permissions.query({ name: "geolocation" });
-      const label =
-        perm.state === "granted" ? "Allowed" :
-        perm.state === "denied"  ? "Denied" :
-        "Needs approval";
-
-      setGpsInfo({ permText: label });
-      perm.onchange = () => refreshGpsPermission();
-    } catch (e) {
-      setGpsInfo({ permText: "Unknown" });
-    }
-  }
-
-  function updateGpsFromPosition(pos) {
-    setGpsInfo({
-      permText: "Allowed",
-      accuracyM: pos?.coords?.accuracy ?? null,
-      ts: pos?.timestamp ?? Date.now()
-    });
-  }
-
-  // ✅ Canonical store code = lowercase
-  function normalizeStoreInput() {
-    const el = document.getElementById("store_code");
-    const raw = (el.value || "");
-    const norm = raw.trim().toLowerCase();
-    if (el.value !== norm) el.value = norm;
-    return norm;
-  }
-
-  function updateStoreName() {
-    const code = normalizeStoreInput();
-    let match = STORES.find(s => String(s.code).toLowerCase() === code);
-
-    // fallback: latest suggestions (in case STORES list is stale)
-    if (!match && LAST_SUGGEST.length) {
-      const sug = LAST_SUGGEST.find(s => String(s.code).toLowerCase() === code);
-      if (sug) match = { name: sug.name, code: sug.code };
-    }
-
-    document.getElementById("storeName").textContent = match ? `Selected: ${match.name}` : "";
-  }
-
-  function setBusy(on, which="") {
-    BUSY = on;
-    const btnIn = document.getElementById("btnClockIn");
-    const btnOut = document.getElementById("btnClockOut");
-
-    btnIn.disabled = on || isClockedIn();
-    btnOut.disabled = on || !isClockedIn();
-
-    if (on) {
-      if (which === "in") btnIn.textContent = "Clocking in…";
-      if (which === "out") btnOut.textContent = "Clocking out…";
-    } else {
-      btnIn.textContent = "Clock In";
-      btnOut.textContent = "Clock Out";
-    }
-
-    updateUI();
-  }
-
-  // ✅ UPDATED: allow PIN typing while clocked in
   function updateUI() {
-    const banner = document.getElementById("clockedBanner");
-    const clockedNameEl = document.getElementById("clockedName");
+    const isClockedIn = !!openShift;
+    const isLoggedIn = !!currentEmployee;
+    const store = elStore();
+    const loginPanel = document.getElementById("loginPanel");
+    const sessionPanel = document.getElementById("sessionPanel");
+    const appPanel = document.getElementById("appPanel");
+    const employeeName = document.getElementById("employeeName");
+    const shiftPanel = document.getElementById("shiftPanel");
+    const shiftTitle = document.getElementById("shiftTitle");
+    const shiftDetails = document.getElementById("shiftDetails");
+    const storeHelp = document.getElementById("storeHelp");
 
-    const pinInput = document.getElementById("pin");
-    const storeInput = document.getElementById("store_code");
-    const btnIn = document.getElementById("btnClockIn");
-    const btnOut = document.getElementById("btnClockOut");
+    loginPanel.classList.toggle("hidden", isLoggedIn);
+    sessionPanel.classList.toggle("hidden", !isLoggedIn);
+    appPanel.classList.toggle("hidden", !isLoggedIn);
 
-    const clocked = isClockedIn();
-    const name = localStorage.getItem(LS_CLOCKED_NAME) || "Employee";
+    if (currentEmployee) {
+      employeeName.textContent = currentEmployee.name || currentEmployee.username_code || "Employee";
+    }
 
-    // Banner
-    if (clocked) {
-      banner.classList.remove("d-none");
-      clockedNameEl.textContent = name;
+    store.disabled = BUSY || isClockedIn || !isLoggedIn;
+    document.getElementById("btnLogin").disabled = BUSY;
+    document.getElementById("btnClockIn").disabled = BUSY || isClockedIn;
+    document.getElementById("btnClockOut").disabled = BUSY || !isClockedIn;
+    document.getElementById("btnLogout").disabled = BUSY || isClockedIn;
+    elCode().disabled = BUSY || isLoggedIn;
+    elPin().disabled = BUSY || isLoggedIn;
+
+    if (isClockedIn) {
+      shiftPanel.classList.add("visible");
+      shiftTitle.textContent = `Clocked in at ${openShift.store_name || "selected store"}`;
+      shiftDetails.textContent = openShift.clock_in_local
+        ? `Shift #${openShift.shift_id} started ${openShift.clock_in_local}.`
+        : `Shift #${openShift.shift_id}.`;
+      storeHelp.textContent = "Store is locked while clocked in.";
+      if (openShift.store_code) store.value = normalizeCode(openShift.store_code);
     } else {
-      banner.classList.add("d-none");
-    }
-
-    // Inputs:
-    pinInput.disabled = BUSY;               // ✅ allow PIN entry while clocked in
-    storeInput.disabled = clocked || BUSY;  // ✅ lock store while clocked in
-
-    // If store input becomes disabled, hide suggestions
-    if (storeInput.disabled) hideSuggest();
-
-    // Buttons
-    btnIn.disabled = BUSY || clocked;
-    btnOut.disabled = BUSY || !clocked;
-
-    // Nice UX: focus PIN when clocked in
-    if (clocked && !BUSY) {
-      pinInput.focus();
-    }
-
-    window.__shouldWarnOnLeave = clocked;
-  }
-
-  // ---- Ping helpers ----
-  function stopPingLoop() {
-    if (pingTimer) {
-      clearInterval(pingTimer);
-      pingTimer = null;
+      shiftPanel.classList.remove("visible");
+      storeHelp.textContent = "Select your current store before clocking in.";
     }
   }
 
-  async function sendPing(pin) {
-    if (!pin) return;
-
-    let loc;
+  async function loadStores() {
     try {
-      loc = await getLocation({ timeoutMs: 15000, maximumAgeMs: PING_MAX_AGE_MS });
+      const res = await fetch("/api/stores/all");
+      const data = await res.json();
+      STORES = Array.isArray(data) ? data : [];
     } catch (e) {
-      return;
+      STORES = Array.isArray(INITIAL_STORES) ? INITIAL_STORES : [];
     }
 
-    try {
-      await fetch("/api/ping", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pin, lat: loc.lat, lng: loc.lng })
-      });
-    } catch (e) {}
+    if (!STORES.length && Array.isArray(INITIAL_STORES)) {
+      STORES = INITIAL_STORES;
+    }
+
+    STORES = STORES
+      .filter(s => s && s.code)
+      .map(s => ({ code: normalizeCode(s.code), name: s.name || s.code }));
+
+    const savedCode = normalizeCode(localStorage.getItem(LS_STORE_CODE));
+    const select = elStore();
+    select.innerHTML = '<option value="">Select a store...</option>' + STORES.map(s => (
+      `<option value="${s.code}">${s.name}</option>`
+    )).join("");
+
+    if (savedCode && STORES.some(s => s.code === savedCode)) {
+      select.value = savedCode;
+    }
   }
 
-  function startPingLoop(pin) {
-    stopPingLoop();
-    if (!pin) return;
-
-    localStorage.setItem(LS_LAST_PIN, pin);
-
-    sendPing(pin).catch(() => {});
-
-    pingTimer = setInterval(() => {
-      if (!isClockedIn()) return stopPingLoop();
-      const p = (localStorage.getItem(LS_LAST_PIN) || "").trim();
-      if (p) sendPing(p).catch(() => {});
-    }, PING_EVERY_MS);
-  }
-
-  window.addEventListener("load", () => {
-    const saved = localStorage.getItem(LS_LAST_STORE);
-    if (saved) document.getElementById("store_code").value = saved;
-
-    updateStoreName();
-    updateUI();
-
-    refreshGpsPermission();
-    getLocation().catch(() => {});
-
-    if (isClockedIn()) {
-      const p = (localStorage.getItem(LS_LAST_PIN) || "").trim();
-      if (p) startPingLoop(p);
-    }
-  });
-
-  // Store input: update selected store + query suggestions
-  document.getElementById("store_code").addEventListener("input", () => {
-    updateStoreName();
-    const code = normalizeStoreInput();
-    if (code) localStorage.setItem(LS_LAST_STORE, code);
-
-    // no suggestions if locked
-    if (document.getElementById("store_code").disabled) return hideSuggest();
-
-    clearTimeout(suggestTimer);
-    const q = (document.getElementById("store_code").value || "").trim();
-    if (q.length < 2) return hideSuggest();
-
-    suggestTimer = setTimeout(async () => {
-      const results = await fetchStoreSuggest(q);
-      LAST_SUGGEST = results || [];
-      showSuggest(LAST_SUGGEST);
-    }, 120);
-  });
-
-  // Click handling for suggestion list + outside click closes it
-  document.addEventListener("click", (e) => {
-    const box = suggestBox();
-    const inp = document.getElementById("store_code");
-    const btn = e.target.closest("button[data-code]");
-
-    if (btn && box.contains(btn)) {
-      inp.value = String(btn.dataset.code || "").toLowerCase();
-      localStorage.setItem(LS_LAST_STORE, inp.value);
-      LAST_SUGGEST = [];
-      hideSuggest();
-      updateStoreName();
-      return;
-    }
-
-    if (!box.classList.contains("d-none") && e.target !== inp && !box.contains(e.target)) {
-      hideSuggest();
-    }
-  });
-
-  // small delay so a click can register before hiding
-  document.getElementById("store_code").addEventListener("blur", () => {
-    setTimeout(() => hideSuggest(), 150);
-  });
-
-  window.addEventListener("beforeunload", (e) => {
-    if (!window.__shouldWarnOnLeave) return;
-    e.preventDefault();
-    e.returnValue = "";
-  });
-
-  document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && isClockedIn()) {
-      const p = (localStorage.getItem(LS_LAST_PIN) || "").trim();
-      if (p) sendPing(p).catch(() => {});
-    }
-  });
-
-  function getLocation({ timeoutMs=10000, maximumAgeMs=0 } = {}) {
+  function getLocation() {
     return new Promise((resolve, reject) => {
-      if (!navigator.geolocation) {
-        setGpsInfo({ permText: "Not supported" });
-        return reject(new Error("Geolocation not supported."));
-      }
-
+      if (!navigator.geolocation) return reject(new Error("Geolocation is not supported."));
       navigator.geolocation.getCurrentPosition(
-        pos => {
-          updateGpsFromPosition(pos);
-          resolve({ lat: pos.coords.latitude, lng: pos.coords.longitude, accuracy: pos.coords.accuracy });
-        },
-        err => {
-          if (err && err.code === 1) setGpsInfo({ permText: "Denied" });
-          else if (err && err.code === 2) setGpsInfo({ permText: "Unavailable" });
-          else if (err && err.code === 3) setGpsInfo({ permText: "Timeout" });
-          else setGpsInfo({ permText: "Error" });
-
-          reject(err);
-        },
-        { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: maximumAgeMs }
+        pos => resolve({
+          lat: pos.coords.latitude,
+          lon: pos.coords.longitude,
+          accuracy_m: pos.coords.accuracy
+        }),
+        reject,
+        { enableHighAccuracy: true, timeout: 12000, maximumAge: 0 }
       );
     });
   }
 
-  async function doClockIn() {
+  async function refreshStatus({silent = false} = {}) {
+    const username_code = normalizeCode(elCode().value);
+    const pin = String(elPin().value || "").trim();
+    if (!username_code || !pin) return null;
+
+    try {
+      const res = await fetch("/api/clock-status", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ username_code, pin })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (!silent) setStatus(data.error || "Could not refresh status.", "warning");
+        return null;
+      }
+      currentEmployee = data.employee || currentEmployee;
+      setOpenShift(data.open_shift || null);
+      if (!silent) {
+        setStatus(data.open_shift ? "Active shift found." : "No open shift.", data.open_shift ? "success" : "");
+      }
+      return data;
+    } catch (e) {
+      if (!silent) setStatus("Could not refresh status. Check your connection.", "warning");
+      return null;
+    }
+  }
+
+  async function loginEmployee() {
     if (BUSY) return;
-    if (isClockedIn()) return setStatus("You are already clocked in.", "warning");
+    const username_code = normalizeCode(elCode().value);
+    const pin = String(elPin().value || "").trim();
 
-    const pin = (document.getElementById("pin").value || "").trim();
-    const qr_token = normalizeStoreInput();
+    if (!username_code || !pin) return setStatus("Enter your username/code and PIN.", "warning");
 
-    if (!pin) return setStatus("Enter your PIN.", "warning");
-    if (!qr_token) return setStatus("Enter your Store Code.", "warning");
+    BUSY = true;
+    updateUI();
+    setStatus("Signing in...");
 
-    setBusy(true, "in");
+    const data = await refreshStatus({silent: true});
+    BUSY = false;
+
+    if (!data || !data.employee) {
+      currentEmployee = null;
+      setOpenShift(null);
+      updateUI();
+      return setStatus("Login failed. Check your username/code and PIN.", "danger");
+    }
+
+    currentEmployee = data.employee;
+    persistIdentity();
+    await loadStores();
+    setOpenShift(data.open_shift || null);
+    setStatus(data.open_shift ? "Signed in. Active shift found." : "Signed in. Select a store to clock in.", "success");
+  }
+
+  function logoutEmployee() {
+    if (BUSY) return;
+    if (openShift) return setStatus("Clock out before changing employee.", "warning");
+
+    clearIdentity();
+    elCode().value = "";
+    elPin().value = "";
+    updateUI();
+    setStatus("Signed out. Enter employee code and PIN.", "");
+    elCode().focus();
+  }
+
+  async function clockIn() {
+    if (BUSY) return;
+    const username_code = normalizeCode(elCode().value);
+    const pin = String(elPin().value || "").trim();
+    const store = selectedStore();
+
+    if (!currentEmployee) return setStatus("Log in before clocking in.", "warning");
+    if (!username_code || !pin) return setStatus("Enter your username/code and PIN.", "warning");
+    if (!store) return setStatus("Select a store before clocking in.", "warning");
+
+    persistIdentity();
+    persistStore(store);
+    BUSY = true;
+    updateUI();
     setStatus("Getting location...");
 
     let loc;
-    try { loc = await getLocation({ timeoutMs: 10000, maximumAgeMs: 0 }); }
-    catch(e) {
-      setBusy(false);
+    try {
+      loc = await getLocation();
+    } catch (e) {
+      BUSY = false;
+      updateUI();
       return setStatus("Location failed. Turn on location services and try again.", "danger");
     }
 
     setStatus("Clocking in...");
     const res = await fetch("/api/clockin", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin, qr_token, lat: loc.lat, lng: loc.lng })
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        username_code,
+        pin,
+        qr_token: store.code,
+        lat: loc.lat,
+        lng: loc.lon,
+        accuracy_m: loc.accuracy_m
+      })
     });
 
     const data = await res.json().catch(() => ({}));
+    BUSY = false;
+
     if (!res.ok) {
-      setBusy(false);
+      updateUI();
       return setStatus(data.error || "Clock-in failed.", "danger");
     }
 
-    setClockedIn(true, { name: data.employee || "", shift_id: data.shift_id });
+    setOpenShift({
+      shift_id: data.shift_id,
+      store_name: store.name,
+      store_code: store.code,
+      clock_in_local: data.clock_in || ""
+    });
     setStatus(data.message || "Clock-in successful.", "success");
-    setBusy(false);
-
-    startPingLoop(pin);
   }
 
-  // ✅ UPDATED: clock out no longer requires store code
-  async function doClockOut() {
+  async function clockOut() {
     if (BUSY) return;
+    const username_code = normalizeCode(elCode().value);
+    const pin = String(elPin().value || "").trim();
+    if (!currentEmployee) return setStatus("Log in before clocking out.", "warning");
+    if (!username_code || !pin) return setStatus("Enter your username/code and PIN.", "warning");
 
-    const pin = (document.getElementById("pin").value || "").trim();
-    if (!pin) return setStatus("Enter your PIN.", "warning");
-
-    setBusy(true, "out");
+    BUSY = true;
+    updateUI();
     setStatus("Getting location...");
 
     let loc;
-    try { loc = await getLocation({ timeoutMs: 10000, maximumAgeMs: 0 }); }
-    catch(e) {
-      setBusy(false);
+    try {
+      loc = await getLocation();
+    } catch (e) {
+      BUSY = false;
+      updateUI();
       return setStatus("Location failed. Turn on location services and try again.", "danger");
     }
 
     setStatus("Clocking out...");
     const res = await fetch("/api/clockout", {
       method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pin, lat: loc.lat, lng: loc.lng })
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({
+        username_code,
+        pin,
+        lat: loc.lat,
+        lng: loc.lon,
+        accuracy_m: loc.accuracy_m
+      })
     });
 
     const data = await res.json().catch(() => ({}));
+    BUSY = false;
 
     if (!res.ok) {
-      const msg = (data.error || "Clock-out failed.").toLowerCase();
-      if (msg.includes("no open shift")) {
-        setClockedIn(false);
-        stopPingLoop();
-        localStorage.removeItem(LS_LAST_PIN);
-        setStatus("No open shift found. It may have been closed by an admin.", "warning");
-        setBusy(false);
-        return;
+      if (String(data.error || "").toLowerCase().includes("no open shift")) {
+        setOpenShift(null);
       }
-      setBusy(false);
+      updateUI();
       return setStatus(data.error || "Clock-out failed.", "danger");
     }
 
-    setClockedIn(false);
-    stopPingLoop();
-    localStorage.removeItem(LS_LAST_PIN);
-
-    const worked = data.human ? ` Worked: ${data.human}` : "";
-    setStatus((data.message || "Clock-out successful.") + worked, "success");
-    setBusy(false);
+    setOpenShift(null);
+    setStatus((data.message || "Clock-out successful.") + (data.human ? ` Worked: ${data.human}` : ""), "success");
   }
+
+  window.addEventListener("load", async () => {
+    const savedCode = normalizeCode(localStorage.getItem(LS_CODE));
+    if (savedCode) elCode().value = savedCode;
+
+    updateUI();
+    setStatus(savedCode ? "Enter your PIN to continue." : "Ready.");
+  });
+
+  elStore().addEventListener("change", () => {
+    const store = selectedStore();
+    if (store) persistStore(store);
+  });
+
+  elCode().addEventListener("change", () => {
+    elCode().value = normalizeCode(elCode().value);
+    persistIdentity();
+  });
+
+  elPin().addEventListener("keydown", (event) => {
+    if (event.key === "Enter") loginEmployee();
+  });
 </script>
 </body>
 </html>
