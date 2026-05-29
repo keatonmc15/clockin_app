@@ -1,176 +1,169 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Payroll</title>
+{% extends "base.html" %}
+{% block title %}Payroll{% endblock %}
+
+{% block content %}
   <style>
-    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 20px; }
-    .wrap { max-width: 1100px; margin: 0 auto; }
-    .topbar { display:flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
-    .card { border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin-top: 14px; }
-    .muted { color: #666; }
-    .btn {
-      display:inline-block; padding: 10px 12px; border-radius: 8px;
-      border: 1px solid #222; text-decoration: none; color: #111; background: #fff;
-      cursor: pointer;
+    .payroll-pill {
+      display: inline-block;
+      padding: 3px 9px;
+      border-radius: 999px;
+      background: #f3f4f6;
+      color: #374151;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
     }
-    .btn.primary { background: #111; color: #fff; }
-    .formrow { display:flex; gap: 10px; align-items: end; flex-wrap: wrap; }
-    label { display:block; font-size: 12px; margin-bottom: 6px; }
-    input[type="date"] { padding: 8px; border: 1px solid #ccc; border-radius: 8px; }
-    table { width: 100%; border-collapse: collapse; }
-    th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid #eee; vertical-align: top; }
-    th { background: #fafafa; font-size: 13px; }
-    .right { text-align:right; }
-    .pill { display:inline-block; padding: 2px 8px; border-radius: 999px; background:#f2f2f2; font-size: 12px; }
-    .grid-table td { white-space: normal; }
+
+    .payroll-table-wrap {
+      overflow-x: auto;
+    }
+
+    .payroll-grid-table td {
+      white-space: normal;
+    }
   </style>
-</head>
 
-<body>
-<div class="wrap">
-  <div class="topbar">
-    <div>
-      <h2 style="margin:0;">Payroll</h2>
-      <div class="muted">Clock-outs between <strong>{{ start }}</strong> and <strong>{{ end }}</strong></div>
-    </div>
+  <div class="card">
+    <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:16px; flex-wrap:wrap;">
+      <div>
+        <div class="h1">Payroll</div>
+        <div class="muted" style="margin-top:6px;">Clock-outs between <strong>{{ start }}</strong> and <strong>{{ end }}</strong></div>
+      </div>
 
-    <div style="display:flex; gap:10px; flex-wrap:wrap;">
-      <a class="btn" href="{{ url_for('admin_dashboard') }}">Back to Dashboard</a>
-      <a class="btn primary" href="{{ url_for('admin_payroll', start=start, end=end, format='csv') }}">Export CSV</a>
-      <a class="btn primary" href="{{ url_for('admin_payroll', start=start, end=end, format='xlsx') }}">Export XLSX</a>
+      <div style="display:flex; gap:10px; flex-wrap:wrap;">
+        <a class="btn" href="{{ url_for('admin_dashboard') }}">Back to Dashboard</a>
+        <a class="btn btn-primary" href="{{ url_for('admin_payroll', start=start, end=end, format='csv') }}">Export CSV</a>
+        <a class="btn btn-primary" href="{{ url_for('admin_payroll', start=start, end=end, format='xlsx') }}">Export XLSX</a>
+      </div>
     </div>
   </div>
 
   <div class="card">
     <form method="get" action="{{ url_for('admin_payroll') }}">
-      <div class="formrow">
-        <div>
-          <label for="start">Start</label>
+      <div style="display:flex; gap:14px; align-items:end; flex-wrap:wrap;">
+        <div style="min-width:170px;">
+          <label for="start" style="display:block; margin-bottom:7px;">Start</label>
           <input id="start" name="start" type="date" value="{{ start }}">
         </div>
-        <div>
-          <label for="end">End</label>
+        <div style="min-width:170px;">
+          <label for="end" style="display:block; margin-bottom:7px;">End</label>
           <input id="end" name="end" type="date" value="{{ end }}">
         </div>
-        <div>
-          <button class="btn primary" type="submit">View</button>
-        </div>
-        <div class="muted" style="padding-bottom:2px;">
-          Defaults to last completed Mon–Sun when blank.
-        </div>
+        <button class="btn btn-primary" type="submit">View</button>
+        <div class="muted" style="padding-bottom:8px;">Defaults to last completed Mon-Sun when blank.</div>
       </div>
     </form>
   </div>
 
-  <!-- ✅ Mon–Sun Grid -->
   <div class="card">
-    <h3 style="margin-top:0;">Mon–Sun Grid (by Clock-In Day)</h3>
-    <div class="muted" style="margin-bottom:10px;">
-      Each day cell shows store breakdown like: <span class="pill">Store Name 4h 15m</span>
+    <div class="h1" style="font-size:20px;">Mon-Sun Grid</div>
+    <div class="muted" style="margin-top:6px; margin-bottom:14px;">
+      Each day cell shows store breakdown like: <span class="payroll-pill">Store Name 4h 15m</span>
     </div>
 
-    <table class="grid-table">
-      <thead>
-        <tr>
-          <th>Employee</th>
-          {% for d in day_headers %}
-            <th>{{ d }}</th>
-          {% endfor %}
-          <th class="right">Total</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for gr in grid_rows %}
+    <div class="payroll-table-wrap">
+      <table class="payroll-grid-table">
+        <thead>
           <tr>
-            <td><strong>{{ gr.employee }}</strong></td>
-            {% for cell in gr.days %}
-              <td>{{ cell }}</td>
+            <th>Employee</th>
+            {% for d in day_headers %}
+              <th>{{ d }}</th>
             {% endfor %}
-            <td class="right"><span class="pill">{{ gr.total }}</span></td>
+            <th class="right">Total</th>
           </tr>
-        {% endfor %}
-      </tbody>
-      <tfoot>
-        <tr>
-          <th>Grand total</th>
-          <th colspan="7"></th>
-          <th class="right">
-            <span class="pill">{{ grand_human_short if grand_human_short is defined else grand_human }}</span>
-          </th>
-        </tr>
-      </tfoot>
-    </table>
+        </thead>
+        <tbody>
+          {% for gr in grid_rows %}
+            <tr>
+              <td><strong>{{ gr.employee }}</strong></td>
+              {% for cell in gr.days %}
+                <td>{{ cell }}</td>
+              {% endfor %}
+              <td class="right"><span class="payroll-pill">{{ gr.total }}</span></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <th>Grand total</th>
+            <th colspan="7"></th>
+            <th class="right">
+              <span class="payroll-pill">{{ grand_human_short if grand_human_short is defined else grand_human }}</span>
+            </th>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
 
     {% if grid_rows|length == 0 %}
-      <div class="muted" style="margin-top:10px;">No shifts found for this date range.</div>
+      <div class="muted" style="margin-top:12px;">No shifts found for this date range.</div>
     {% endif %}
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0;">Employee totals</h3>
-    <table>
-      <thead>
-        <tr>
-          <th>Employee</th>
-          <th class="right">Total Minutes</th>
-          <th class="right">Total (Short)</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for emp in summary %}
-        <tr>
-          <td><strong>{{ emp.employee }}</strong></td>
-          <td class="right">{{ emp.minutes }}</td>
-          <td class="right"><span class="pill">{{ emp.human_short }}</span></td>
-        </tr>
-        {% endfor %}
-      </tbody>
-      <tfoot>
-        <tr>
-          <th>Grand total</th>
-          <th class="right">{{ grand_minutes }}</th>
-          <th class="right"><span class="pill">{{ grand_human_short if grand_human_short is defined else grand_human }}</span></th>
-        </tr>
-      </tfoot>
-    </table>
+    <div class="h1" style="font-size:20px;">Employee Totals</div>
+    <div class="payroll-table-wrap" style="margin-top:14px;">
+      <table>
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th class="right">Total Minutes</th>
+            <th class="right">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for emp in summary %}
+            <tr>
+              <td><strong>{{ emp.employee }}</strong></td>
+              <td class="right">{{ emp.minutes }}</td>
+              <td class="right"><span class="payroll-pill">{{ emp.human_short }}</span></td>
+            </tr>
+          {% endfor %}
+        </tbody>
+        <tfoot>
+          <tr>
+            <th>Grand total</th>
+            <th class="right">{{ grand_minutes }}</th>
+            <th class="right"><span class="payroll-pill">{{ grand_human_short if grand_human_short is defined else grand_human }}</span></th>
+          </tr>
+        </tfoot>
+      </table>
+    </div>
   </div>
 
   <div class="card">
-    <h3 style="margin-top:0;">Detail</h3>
-    <div class="muted" style="margin-bottom:10px;">
-      Each row is a shift that clocked out within the selected payroll week.
+    <div class="h1" style="font-size:20px;">Detail</div>
+    <div class="muted" style="margin-top:6px; margin-bottom:14px;">Each row is a shift that clocked out within the selected payroll week.</div>
+
+    <div class="payroll-table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Employee</th>
+            <th>Store</th>
+            <th>Clock In</th>
+            <th>Clock Out</th>
+            <th class="right">Minutes</th>
+            <th class="right">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for r in rows %}
+            <tr>
+              <td>{{ r.employee }}</td>
+              <td>{{ r.store }}</td>
+              <td>{{ r.clock_in }}</td>
+              <td>{{ r.clock_out }}</td>
+              <td class="right">{{ r.minutes }}</td>
+              <td class="right">{{ r.human_short }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
     </div>
-    <table>
-      <thead>
-        <tr>
-          <th>Employee</th>
-          <th>Store</th>
-          <th>Clock In</th>
-          <th>Clock Out</th>
-          <th class="right">Minutes</th>
-          <th class="right">Time</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for r in rows %}
-        <tr>
-          <td>{{ r.employee }}</td>
-          <td>{{ r.store }}</td>
-          <td>{{ r.clock_in }}</td>
-          <td>{{ r.clock_out }}</td>
-          <td class="right">{{ r.minutes }}</td>
-          <td class="right">{{ r.human_short }}</td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
 
     {% if rows|length == 0 %}
-      <div class="muted" style="margin-top:10px;">No shifts found for this date range.</div>
+      <div class="muted" style="margin-top:12px;">No shifts found for this date range.</div>
     {% endif %}
   </div>
-</div>
-</body>
-</html>
+{% endblock %}

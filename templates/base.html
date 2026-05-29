@@ -6,109 +6,198 @@
   <title>{% block title %}Clock-In Admin{% endblock %}</title>
 
   <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #111827;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --line-strong: #d1d5db;
+      --nav: #111827;
+      --primary: #1d4ed8;
+      --primary-hover: #1e40af;
+      --danger: #dc2626;
+      --danger-hover: #b91c1c;
+      --ok: #16a34a;
+      --ok-hover: #15803d;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
     body {
-      font-family: Arial, sans-serif;
+      font-family: Arial, Helvetica, sans-serif;
       margin: 0;
-      background: #f6f7fb;
-      color: #111;
+      background: var(--bg);
+      color: var(--text);
+      font-size: 14px;
+      line-height: 1.45;
     }
 
     header {
-      background: #111827;
+      background: var(--nav);
       color: #ffffff;
-      padding: 14px 20px;
+      padding: 14px 24px;
       display: flex;
       align-items: center;
       justify-content: space-between;
+      gap: 18px;
+      flex-wrap: wrap;
+      box-shadow: 0 1px 0 rgba(255,255,255,0.06);
     }
 
     header .brand {
-      font-weight: bold;
+      font-weight: 800;
       font-size: 18px;
+      letter-spacing: 0;
+      white-space: nowrap;
+    }
+
+    header nav {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 6px;
+      flex-wrap: wrap;
     }
 
     header nav a {
       color: #ffffff;
       text-decoration: none;
-      margin-left: 16px;
+      margin-left: 0;
       font-size: 14px;
-      opacity: 0.9;
+      opacity: 0.86;
+      padding: 7px 10px;
+      border-radius: 8px;
     }
 
     header nav a:hover {
-      text-decoration: underline;
+      text-decoration: none;
       opacity: 1;
+      background: rgba(255,255,255,0.09);
     }
 
-    /* ✅ Active tab */
     header nav a.active {
       font-weight: 700;
-      text-decoration: underline;
+      text-decoration: none;
       opacity: 1;
+      background: rgba(255,255,255,0.14);
     }
 
     main {
-      max-width: 1000px;
-      margin: 20px auto;
-      padding: 0 20px;
+      max-width: 1240px;
+      margin: 24px auto;
+      padding: 0 24px;
     }
 
     .card {
-      background: #ffffff;
-      border: 1px solid #e5e7eb;
+      background: var(--panel);
+      border: 1px solid var(--line);
       border-radius: 10px;
-      padding: 16px;
-      margin-bottom: 16px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 1px 2px rgba(15,23,42,0.04);
     }
 
-    .btn {
-      padding: 8px 12px;
-      border: 1px solid #d1d5db;
+    .btn,
+    button:not(.btn) {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 38px;
+      padding: 9px 14px;
+      border: 1px solid var(--line-strong);
       background: #ffffff;
       border-radius: 8px;
       cursor: pointer;
       font-size: 14px;
+      font-weight: 700;
+      color: var(--text);
+      text-decoration: none;
+      line-height: 1.2;
+      white-space: nowrap;
+    }
+
+    .btn:hover,
+    button:not(.btn):hover {
+      background: #f8fafc;
+      text-decoration: none;
     }
 
     .btn-primary {
-      background: #2563eb;
+      background: var(--primary);
       color: white;
-      border-color: #2563eb;
+      border-color: var(--primary);
+    }
+
+    .btn-primary:hover {
+      background: var(--primary-hover);
+      border-color: var(--primary-hover);
     }
 
     .btn-danger {
-      background: #dc2626;
+      background: var(--danger);
       color: white;
-      border-color: #dc2626;
+      border-color: var(--danger);
+    }
+
+    .btn-danger:hover {
+      background: var(--danger-hover);
+      border-color: var(--danger-hover);
     }
 
     .btn-ok {
-      background: #16a34a;
+      background: var(--ok);
       color: white;
-      border-color: #16a34a;
+      border-color: var(--ok);
+    }
+
+    .btn-ok:hover {
+      background: var(--ok-hover);
+      border-color: var(--ok-hover);
+    }
+
+    a {
+      color: var(--primary);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
     }
 
     table {
       width: 100%;
       border-collapse: collapse;
+      background: #ffffff;
     }
 
     th, td {
-      border-bottom: 1px solid #e5e7eb;
-      padding: 10px;
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
       text-align: left;
+      vertical-align: top;
     }
 
     th {
-      background: #f3f4f6;
+      background: #f8fafc;
+      color: #64748b;
       font-size: 12px;
       text-transform: uppercase;
+      letter-spacing: 0;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+
+    tbody tr:hover {
+      background: #fafafa;
     }
 
     .flash {
-      padding: 10px;
+      padding: 12px 14px;
       border-radius: 8px;
-      margin-bottom: 12px;
+      margin-bottom: 14px;
       font-size: 14px;
     }
 
@@ -122,12 +211,29 @@
       border: 1px solid #fca5a5;
     }
 
-    input {
-      padding: 8px 10px;
+    input,
+    select,
+    textarea {
+      padding: 9px 11px;
       width: 100%;
-      border: 1px solid #d1d5db;
+      border: 1px solid var(--line-strong);
       border-radius: 8px;
       font-size: 14px;
+      color: var(--text);
+      background: #ffffff;
+      min-height: 38px;
+    }
+
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+    }
+
+    input:focus,
+    select:focus,
+    textarea:focus {
+      outline: 2px solid rgba(29,78,216,0.16);
+      border-color: #93c5fd;
     }
 
     code {
@@ -135,6 +241,81 @@
       padding: 2px 6px;
       border-radius: 6px;
       font-size: 13px;
+    }
+
+    label {
+      color: #4b5563;
+      font-weight: 700;
+    }
+
+    .muted {
+      color: var(--muted);
+    }
+
+    .h1 {
+      font-size: 24px;
+      font-weight: 800;
+      line-height: 1.15;
+    }
+
+    .grid {
+      display: grid;
+      gap: 20px;
+    }
+
+    .grid-2 {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .right {
+      text-align: right;
+    }
+
+    .card > h2:first-child,
+    .card > h3:first-child {
+      margin-top: 0;
+    }
+
+    @media (max-width: 900px) {
+      main {
+        padding: 0 16px;
+        margin-top: 16px;
+      }
+
+      header {
+        padding: 14px 16px;
+      }
+
+      header nav {
+        justify-content: flex-start;
+        width: 100%;
+      }
+
+      .grid-2 {
+        grid-template-columns: 1fr;
+      }
+
+      .card {
+        padding: 16px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      body {
+        font-size: 13px;
+      }
+
+      header nav a {
+        padding: 7px 8px;
+      }
+
+      th, td {
+        padding: 10px;
+      }
+
+      .btn {
+        width: auto;
+      }
     }
   </style>
 </head>
