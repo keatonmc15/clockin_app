@@ -1707,6 +1707,7 @@ def api_clockin():
     qr_token = normalize_store_code((data.get("qr_token") or "").strip())
     lat = data.get("lat")
     lng = data.get("lng")
+    accuracy_m = data.get("accuracy_m")
 
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
@@ -1747,9 +1748,24 @@ def api_clockin():
     try:
         lat = float(lat)
         lng = float(lng)
-    except ValueError:
+        if accuracy_m is not None:
+            accuracy_m = float(accuracy_m)
+    except (TypeError, ValueError):
         log_event("CLOCKIN_DENY_BAD_LATLNG", employee_id=emp.id, store_id=store.id)
         return jsonify({"error": "Invalid lat/lng."}), 400
+
+    if accuracy_m is not None and accuracy_m > 120:
+        log_event(
+            "CLOCKIN_DENY_ACCURACY_TOO_LOW",
+            employee_id=emp.id,
+            store_id=store.id,
+            accuracy_m=round(accuracy_m, 1),
+            device_uuid=device_uuid or ""
+        )
+        return jsonify({
+            "error": "GPS accuracy is too low. Step outside and try again.",
+            "accuracy_m": accuracy_m
+        }), 403
 
     dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
 
@@ -1810,6 +1826,7 @@ def api_clockout():
     pin = (data.get("pin") or "").strip()
     lat = data.get("lat")
     lng = data.get("lng")
+    accuracy_m = data.get("accuracy_m")
 
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
@@ -1833,9 +1850,24 @@ def api_clockout():
     try:
         lat = float(lat)
         lng = float(lng)
-    except ValueError:
+        if accuracy_m is not None:
+            accuracy_m = float(accuracy_m)
+    except (TypeError, ValueError):
         log_event("CLOCKOUT_DENY_BAD_LATLNG", employee_id=emp.id, shift_id=open_shift.id)
         return jsonify({"error": "Invalid lat/lng."}), 400
+
+    if accuracy_m is not None and accuracy_m > 120:
+        log_event(
+            "CLOCKOUT_DENY_ACCURACY_TOO_LOW",
+            employee_id=emp.id,
+            shift_id=open_shift.id,
+            accuracy_m=round(accuracy_m, 1),
+            device_uuid=device_uuid or ""
+        )
+        return jsonify({
+            "error": "GPS accuracy is too low. Step outside and try again.",
+            "accuracy_m": accuracy_m
+        }), 403
 
     store = Store.query.get(open_shift.store_id)
     dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
