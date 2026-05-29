@@ -1702,6 +1702,7 @@ def employee_page():
 def api_clockin():
     data = request.get_json(force=True, silent=True) or {}
 
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     qr_token = normalize_store_code((data.get("qr_token") or "").strip())
     lat = data.get("lat")
@@ -1713,7 +1714,7 @@ def api_clockin():
     if not pin or not qr_token:
         return jsonify({"error": "Missing PIN or store code."}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"error": "Invalid or inactive employee."}), 403
 
@@ -1805,6 +1806,7 @@ def api_clockin():
 @app.post("/api/clockout")
 def api_clockout():
     data = request.get_json(force=True, silent=True) or {}
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     lat = data.get("lat")
     lng = data.get("lng")
@@ -1815,7 +1817,7 @@ def api_clockout():
     if not pin:
         return jsonify({"error": "Missing PIN."}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"error": "Invalid or inactive employee."}), 403
 
@@ -1884,11 +1886,50 @@ def api_clockout():
         "human": minutes_to_human(mins),
     })
 
+@app.post("/api/clock-status")
+def api_clock_status():
+    data = request.get_json(force=True, silent=True) or {}
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
+    pin = (data.get("pin") or "").strip()
+
+    if not pin:
+        return jsonify({"ok": False, "error": "missing_pin"}), 400
+
+    emp = find_employee_for_mobile(username_code, pin)
+    if not emp or not emp.active:
+        return jsonify({"ok": False, "error": "invalid_or_inactive_employee"}), 403
+
+    open_shift = (
+        Shift.query
+        .filter(Shift.employee_id == emp.id, Shift.clock_out.is_(None))
+        .order_by(Shift.clock_in.desc())
+        .first()
+    )
+
+    payload = {
+        "ok": True,
+        "employee": employee_payload(emp),
+        "open_shift": None,
+    }
+
+    if open_shift:
+        store = Store.query.get(open_shift.store_id)
+        payload["open_shift"] = {
+            "shift_id": open_shift.id,
+            "store_id": open_shift.store_id,
+            "store_name": store.name if store else "",
+            "store_code": store.qr_token if store else "",
+            "clock_in_local": fmt_dt(open_shift.clock_in),
+        }
+
+    return jsonify(payload), 200
+
 # 15-minute location ping endpoint
 @app.post("/api/ping")
 def api_ping():
     data = request.get_json(force=True, silent=True) or {}
 
+    username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
     lat = (data.get("lat"))
     lng = (data.get("lng"))
@@ -1899,7 +1940,7 @@ def api_ping():
     if not pin:
         return jsonify({"error": "Missing PIN."}), 400
 
-    emp = Employee.query.filter_by(pin=pin).first()
+    emp = find_employee_for_mobile(username_code, pin)
     if not emp or not emp.active:
         return jsonify({"error": "Invalid or inactive employee."}), 403
 
