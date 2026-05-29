@@ -866,7 +866,7 @@ useEffect(() => {
             <View style={styles.rowBetween}>
               <Text style={styles.cardTitle}>Shift</Text>
               <Pressable onPress={logout}>
-                <Text style={styles.link}>Log out</Text>
+                <Text style={styles.link}>Log Out</Text>
               </Pressable>
             </View>
 
