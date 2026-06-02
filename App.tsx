@@ -12,6 +12,8 @@ import {
   Image,
   AppState,
   AppStateStatus,
+  Linking,
+  PermissionsAndroid,
 } from 'react-native';
 
 import BackgroundGeolocation, {
@@ -50,6 +52,12 @@ type StatusResponse = {
   error?: string;
 };
 
+type LocationPermissionStatus = {
+  status: 'checking' | 'granted' | 'denied' | 'incomplete';
+  message: string;
+  needsSettings: boolean;
+};
+
 const API_BASE = __DEV__ ? 'http://10.0.2.2:5000' : 'https://clockin-app.onrender.com';
 const DEVICE_TOKEN = 'KeatonClockInMobile_Venom97Triad1997151506172024!';
 const SESSION_KEY = 'clockin_mobile_employee_session_v1';
@@ -68,6 +76,12 @@ function deviceLabel() {
 
 export default function App() {
   const [bgState, setBgState] = useState<State | null>(null);
+  const [locationPermission, setLocationPermission] = useState<LocationPermissionStatus>({
+    status: 'checking',
+    message: 'Checking location permission...',
+    needsSettings: false,
+  });
+  const [permissionBusy, setPermissionBusy] = useState(false);
 
   const [employeeCode, setEmployeeCode] = useState('');
   const [pin, setPin] = useState('');
@@ -152,7 +166,8 @@ export default function App() {
   const openShift = status?.open_shift ?? null;
   const isClockedIn = !!openShift;
   const lockedStoreName = isClockedIn ? openShift?.store_name || '' : '';
-  const canClockIn = loggedIn && !isClockedIn && storeCode.trim().length > 0;
+  const locationReady = locationPermission.status === 'granted';
+  const canClockIn = loggedIn && !isClockedIn && storeCode.trim().length > 0 && locationReady;
 
   const log = (msg: string) => {
     const line = `${new Date().toLocaleTimeString()}  ${msg}`;
@@ -195,6 +210,153 @@ export default function App() {
 
   async function persistSelectedStore(store: StoreItem) {
     await AsyncStorage.setItem(SELECTED_STORE_KEY, JSON.stringify(store));
+  }
+
+  function androidVersionNumber() {
+    const raw = Platform.Version;
+    return typeof raw === 'number' ? raw : parseInt(String(raw), 10) || 0;
+  }
+
+  async function checkLocationPermission(): Promise<LocationPermissionStatus> {
+    if (Platform.OS !== 'android') {
+      const ok = {
+        status: 'granted' as const,
+        message: 'Location permission is ready.',
+        needsSettings: false,
+      };
+      setLocationPermission(ok);
+      return ok;
+    }
+
+    const fine = await PermissionsAndroid.check(
+      PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+    );
+    const background =
+      androidVersionNumber() < 29 ||
+      (await PermissionsAndroid.check(
+        PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+      ));
+
+    let next: LocationPermissionStatus;
+    if (fine && background) {
+      next = {
+        status: 'granted',
+        message: 'Location permission is ready.',
+        needsSettings: false,
+      };
+    } else if (!fine) {
+      next = {
+        status: 'denied',
+        message:
+          'Location is required to clock in. Choose Allow location access and keep precise location on.',
+        needsSettings: true,
+      };
+    } else {
+      next = {
+        status: 'incomplete',
+        message:
+          'Location is partly allowed. Open settings and choose Allow all the time for ClockIn.',
+        needsSettings: true,
+      };
+    }
+
+    setLocationPermission(next);
+    return next;
+  }
+
+  async function requestLocationPermission() {
+    if (Platform.OS !== 'android') {
+      await checkLocationPermission();
+      return;
+    }
+
+    setPermissionBusy(true);
+    try {
+      const fineResult = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION,
+        {
+          title: 'Allow location for ClockIn',
+          message:
+            'ClockIn needs precise location to verify you are at the store before clocking in.',
+          buttonPositive: 'Allow',
+          buttonNegative: 'Not now',
+        },
+      );
+
+      if (fineResult !== PermissionsAndroid.RESULTS.GRANTED) {
+        setLocationPermission({
+          status: 'denied',
+          message:
+            'Location was not allowed. Open settings, choose Location, then allow precise location.',
+          needsSettings: true,
+        });
+        return;
+      }
+
+      if (androidVersionNumber() >= 29) {
+        const backgroundGranted = await PermissionsAndroid.check(
+          PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+        );
+
+        if (!backgroundGranted) {
+          const bgResult = await PermissionsAndroid.request(
+            PermissionsAndroid.PERMISSIONS.ACCESS_BACKGROUND_LOCATION,
+          );
+
+          if (bgResult !== PermissionsAndroid.RESULTS.GRANTED) {
+            setLocationPermission({
+              status: 'incomplete',
+              message:
+                'Almost done. Open settings and choose Allow all the time for location.',
+              needsSettings: true,
+            });
+            return;
+          }
+        }
+      }
+
+      await checkLocationPermission();
+    } catch {
+      setLocationPermission({
+        status: 'denied',
+        message: 'Could not request location permission. Open app settings and allow location.',
+        needsSettings: true,
+      });
+    } finally {
+      setPermissionBusy(false);
+    }
+  }
+
+  async function openAppSettings() {
+    try {
+      await Linking.openSettings();
+    } catch {
+      Alert.alert('Open settings', 'Open Android Settings, find ClockIn, then allow location.');
+    }
+  }
+
+  async function ensureLocationReadyForClockIn() {
+    const permission = await checkLocationPermission();
+    if (permission.status === 'granted') return true;
+
+    const buttons =
+      permission.needsSettings
+        ? [
+            {text: 'Not now', style: 'cancel' as const},
+            {text: 'Allow Location', onPress: requestLocationPermission},
+            {text: 'Open Settings', onPress: openAppSettings},
+          ]
+        : [
+            {text: 'Not now', style: 'cancel' as const},
+            {text: 'Allow Location', onPress: requestLocationPermission},
+          ];
+
+    Alert.alert(
+      'Location required',
+      permission.message,
+      buttons,
+    );
+    return false;
   }
 
   // -----------------------------------
@@ -275,11 +437,19 @@ export default function App() {
       if (s === 'active' && loggedIn) {
         refreshStatus({silent: true});
       }
+      if (s === 'active') {
+        checkLocationPermission();
+      }
     };
     const sub = AppState.addEventListener('change', onAppState);
     return () => sub.remove();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loggedIn, employeeCode, pin]);
+
+  useEffect(() => {
+    checkLocationPermission();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Fetch stores (for picker; does not block login)
 useEffect(() => {
@@ -464,6 +634,7 @@ useEffect(() => {
       setLoggedIn(true);
       setStatus({ok: true, employee: data.employee, open_shift: null});
       await persistEmployeeSession(codeClean, pinClean, data.employee);
+      await checkLocationPermission();
       log('✅ employee session ready');
       await refreshStatus(
         {silent: true},
@@ -507,6 +678,9 @@ useEffect(() => {
 
   async function clockIn() {
     if (!loggedIn) return;
+    const permissionOk = await ensureLocationReadyForClockIn();
+    if (!permissionOk) return;
+
     const storeClean = storeCode.trim().toLowerCase();
     if (!storeClean) {
       Alert.alert('Select a store', 'Choose your current store before clocking in.');
@@ -808,6 +982,47 @@ useEffect(() => {
     );
   }
 
+  function renderLocationPermissionCard() {
+    const ok = locationPermission.status === 'granted';
+    return (
+      <View style={[styles.card, ok ? styles.permissionCardOk : styles.permissionCardWarn]}>
+        <Text style={styles.permissionTitle}>Location access required</Text>
+        <Text style={styles.line}>
+          ClockIn needs location to confirm you are at the store before clocking in.
+        </Text>
+        <Text style={styles.lineMuted}>
+          Choose Allow location access. If Android asks, choose Allow all the time and keep precise location on.
+        </Text>
+        <Text style={ok ? styles.permissionGoodText : styles.permissionWarnText}>
+          {locationPermission.message}
+        </Text>
+
+        {!ok ? (
+          <>
+            <View style={{height: 10}} />
+            <Pressable
+              onPress={requestLocationPermission}
+              style={[styles.secondaryBtn, permissionBusy && styles.disabledBtn]}
+              disabled={permissionBusy}>
+              <Text style={styles.secondaryBtnText}>
+                {permissionBusy ? 'Checking...' : 'Allow Location Access'}
+              </Text>
+            </Pressable>
+
+            {locationPermission.needsSettings ? (
+              <>
+                <View style={{height: 10}} />
+                <Pressable onPress={openAppSettings} style={styles.secondaryBtn}>
+                  <Text style={styles.secondaryBtnText}>Open App Settings</Text>
+                </Pressable>
+              </>
+            ) : null}
+          </>
+        ) : null}
+      </View>
+    );
+  }
+
   return (
     <SafeAreaView style={styles.safe}>
       <View style={styles.header}>
@@ -820,6 +1035,8 @@ useEffect(() => {
           <Text style={styles.debugToggleText}>{showDebug ? 'Hide Debug' : 'Show Debug'}</Text>
         </Pressable>
       </View>
+
+      {renderLocationPermissionCard()}
 
       {!loggedIn ? (
         <View style={styles.card}>
@@ -907,6 +1124,8 @@ useEffect(() => {
               </Text>
             ) : !storeCode ? (
               <Text style={styles.lineMuted}>Select a store before clocking in.</Text>
+            ) : !locationReady ? (
+              <Text style={styles.lineMuted}>Allow location access before clocking in.</Text>
             ) : null}
 
             {status?.error ? <Text style={styles.lineMuted}>Status error: {status.error}</Text> : null}
@@ -1051,6 +1270,27 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     padding: 14,
     marginBottom: 12,
+  },
+  permissionCardOk: {
+    borderColor: '#b8e2c1',
+    backgroundColor: '#f5fbf6',
+  },
+  permissionCardWarn: {
+    borderColor: '#f0cf9f',
+    backgroundColor: '#fff9f0',
+  },
+  permissionTitle: {fontSize: 16, fontWeight: '900', marginBottom: 8},
+  permissionGoodText: {
+    color: '#136b2f',
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 4,
+  },
+  permissionWarnText: {
+    color: '#8a4b00',
+    fontSize: 14,
+    fontWeight: '800',
+    marginTop: 4,
   },
   cardTitle: {fontSize: 18, fontWeight: '800', marginBottom: 10},
   label: {fontWeight: '700', marginBottom: 6},
