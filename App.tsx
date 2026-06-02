@@ -820,6 +820,12 @@ useEffect(() => {
   useEffect(() => {
     log(`APP_MOUNT Platform=${Platform.OS}`);
 
+    if (!locationReady) {
+      setBgState(null);
+      log('tracking setup deferred until location permission is allowed');
+      return;
+    }
+
     const subLocation = BackgroundGeolocation.onLocation(
       async (location: Location) => {
         if ((location as any)?.uuid && !deviceUuidRef.current) {
@@ -917,6 +923,8 @@ useEffect(() => {
         distanceFilter: 25,
         stopOnTerminate: false,
         startOnBoot: true,
+        disableLocationAuthorizationAlert: true,
+        locationAuthorizationRequest: 'Always',
         debug: false,
         logLevel: 0,
         notification: {
@@ -944,7 +952,7 @@ useEffect(() => {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loggedIn, storeName, storeCode, employeeCode, pin, showDebug]);
+  }, [loggedIn, storeName, storeCode, employeeCode, pin, showDebug, locationReady]);
 
   // -----------------------------------
   // UI
