@@ -58,6 +58,12 @@ type LocationPermissionStatus = {
   needsSettings: boolean;
 };
 
+type FreshPositionResult = {
+  location: Location | null;
+  errorCode?: string;
+  errorMessage?: string;
+};
+
 const API_BASE = __DEV__ ? 'http://10.0.2.2:5000' : 'https://clockin-app.onrender.com';
 const DEVICE_TOKEN = 'KeatonClockInMobile_Venom97Triad1997151506172024!';
 const SESSION_KEY = 'clockin_mobile_employee_session_v1';
@@ -82,6 +88,7 @@ export default function App() {
     needsSettings: false,
   });
   const [permissionBusy, setPermissionBusy] = useState(false);
+  const [locationLookupBusy, setLocationLookupBusy] = useState(false);
 
   const [employeeCode, setEmployeeCode] = useState('');
   const [pin, setPin] = useState('');
@@ -167,7 +174,9 @@ export default function App() {
   const isClockedIn = !!openShift;
   const lockedStoreName = isClockedIn ? openShift?.store_name || '' : '';
   const locationReady = locationPermission.status === 'granted';
-  const canClockIn = loggedIn && !isClockedIn && storeCode.trim().length > 0 && locationReady;
+  const canClockIn =
+    loggedIn && !isClockedIn && storeCode.trim().length > 0 && locationReady && !locationLookupBusy;
+  const canClockOut = loggedIn && isClockedIn && locationReady && !locationLookupBusy;
 
   const log = (msg: string) => {
     const line = `${new Date().toLocaleTimeString()}  ${msg}`;
@@ -332,6 +341,18 @@ export default function App() {
       await Linking.openSettings();
     } catch {
       Alert.alert('Open settings', 'Open Android Settings, find ClockIn, then allow location.');
+    }
+  }
+
+  async function openLocationSettings() {
+    try {
+      if (Platform.OS === 'android' && typeof (Linking as any).sendIntent === 'function') {
+        await (Linking as any).sendIntent('android.settings.LOCATION_SOURCE_SETTINGS');
+        return;
+      }
+      await Linking.openSettings();
+    } catch {
+      Alert.alert('Open settings', 'Open Android Settings and turn on Location Services.');
     }
   }
 
@@ -664,16 +685,93 @@ useEffect(() => {
   // -----------------------------------
   // Clock in/out (MOBILE endpoints)
   // -----------------------------------
-  async function getFreshPosition(): Promise<Location | null> {
-    const loc = await BackgroundGeolocation.getCurrentPosition({
-      timeout: 30,
-      maximumAge: 5000,
-      desiredAccuracy: 10,
-      samples: 1,
-      persist: false,
-    }).catch(() => null);
+  function safeJson(value: unknown) {
+    try {
+      return JSON.stringify(value);
+    } catch {
+      return String(value);
+    }
+  }
 
-    return loc;
+  function locationErrorCode(error: any) {
+    if (error == null) return undefined;
+    if (typeof error === 'number') return String(error);
+    if (typeof error === 'string') return error;
+    return String(error.code ?? error.status ?? error.name ?? '');
+  }
+
+  function locationErrorMessage(error: any) {
+    const code = locationErrorCode(error);
+    const rawMessage =
+      typeof error === 'string'
+        ? error
+        : String(error?.message || error?.error || error?.reason || '').trim();
+    const lower = rawMessage.toLowerCase();
+
+    if (code === '1' || lower.includes('permission')) {
+      return 'Location permission is not allowed. Open app settings and allow precise location.';
+    }
+    if (code === '408' || lower.includes('timeout')) {
+      return 'GPS is taking too long to find your location. Step outside or closer to a window, then try again.';
+    }
+    if (lower.includes('unavailable') || lower.includes('unknown') || code === '0') {
+      return 'Location is unavailable right now. Make sure Location Services are on, wait a moment, then try again.';
+    }
+    if (code === '2' || lower.includes('network')) {
+      return 'Location could not connect to the location provider. Check internet and Location Services, then try again.';
+    }
+    if (rawMessage) return rawMessage;
+    return 'Location is unavailable right now. Make sure Location Services are on, then try again.';
+  }
+
+  function showLocationError(title: string, message: string, openSettings = false) {
+    Alert.alert(
+      title,
+      message,
+      openSettings
+        ? [
+            {text: 'Not now', style: 'cancel'},
+            {text: 'Open Settings', onPress: openLocationSettings},
+          ]
+        : [{text: 'OK'}],
+    );
+  }
+
+  async function getFreshPosition(): Promise<FreshPositionResult> {
+    try {
+      const provider = await BackgroundGeolocation.getProviderState();
+      log(
+        `provider enabled=${provider.enabled} gps=${provider.gps} network=${provider.network} status=${provider.status}`,
+      );
+
+      if (!provider.enabled) {
+        return {
+          location: null,
+          errorCode: 'location_services_off',
+          errorMessage: 'Turn on Location Services in Android Settings, then try again.',
+        };
+      }
+    } catch (e) {
+      log(`provider state check failed: ${safeJson(e)}`);
+    }
+
+    try {
+      const location = await BackgroundGeolocation.getCurrentPosition({
+        timeout: 60,
+        maximumAge: 15000,
+        desiredAccuracy: 25,
+        samples: 3,
+        persist: false,
+      });
+      return {location};
+    } catch (e) {
+      log(`getCurrentPosition failed: ${safeJson(e)}`);
+      return {
+        location: null,
+        errorCode: locationErrorCode(e),
+        errorMessage: locationErrorMessage(e),
+      };
+    }
   }
 
   async function clockIn() {
@@ -690,11 +788,18 @@ useEffect(() => {
     const synced = await syncGeofenceForStore(storeClean);
     if (!synced) return;
 
-    const loc = await getFreshPosition();
-    if (!loc) {
-      Alert.alert('Location needed', 'Could not get current location. Try again.');
+    setLocationLookupBusy(true);
+    const locationResult = await getFreshPosition();
+    setLocationLookupBusy(false);
+    if (!locationResult.location) {
+      showLocationError(
+        'Location needed',
+        locationResult.errorMessage || 'Location is unavailable right now. Try again.',
+        locationResult.errorCode === 'location_services_off',
+      );
       return;
     }
+    const loc = locationResult.location;
 
     const {res, data} = await apiPost('/api/mobile/clock-in', {
       username_code: employeeCode.trim().toLowerCase(),
@@ -708,7 +813,7 @@ useEffect(() => {
     });
 
     if (!res.ok) {
-      const msg = data?.error || `Clock-in failed (${res.status})`;
+      const msg = data?.message || data?.error || `Clock-in failed (${res.status})`;
       log(`❌ /api/mobile/clock-in failed: ${msg}`);
       Alert.alert('Clock-in failed', msg);
       return;
@@ -722,12 +827,21 @@ useEffect(() => {
 
   async function clockOut() {
     if (!loggedIn) return;
+    const permissionOk = await ensureLocationReadyForClockIn();
+    if (!permissionOk) return;
 
-    const loc = await getFreshPosition();
-    if (!loc) {
-      Alert.alert('Location needed', 'Could not get current location. Try again.');
+    setLocationLookupBusy(true);
+    const locationResult = await getFreshPosition();
+    setLocationLookupBusy(false);
+    if (!locationResult.location) {
+      showLocationError(
+        'Location needed',
+        locationResult.errorMessage || 'Location is unavailable right now. Try again.',
+        locationResult.errorCode === 'location_services_off',
+      );
       return;
     }
+    const loc = locationResult.location;
 
     const {res, data} = await apiPost('/api/mobile/clock-out', {
       username_code: employeeCode.trim().toLowerCase(),
@@ -740,7 +854,7 @@ useEffect(() => {
     });
 
     if (!res.ok) {
-      const msg = data?.error || `Clock-out failed (${res.status})`;
+      const msg = data?.message || data?.error || `Clock-out failed (${res.status})`;
       log(`❌ /api/mobile/clock-out failed: ${msg}`);
       Alert.alert('Clock-out failed', msg);
       return;
@@ -761,11 +875,12 @@ useEffect(() => {
       return;
     }
 
-    const loc = await getFreshPosition();
-    if (!loc) {
-      log('⚠️ auto-exit-close: no location fix');
+    const locationResult = await getFreshPosition();
+    if (!locationResult.location) {
+      log('auto-exit-close: no location fix');
       return;
     }
+    const loc = locationResult.location;
 
     const {res, data} = await apiPost('/api/mobile/auto-exit-close', {
       username_code: employeeCode.trim().toLowerCase(),
@@ -1137,6 +1252,7 @@ useEffect(() => {
             ) : null}
 
             {status?.error ? <Text style={styles.lineMuted}>Status error: {status.error}</Text> : null}
+            {locationLookupBusy ? <Text style={styles.lineMuted}>Getting location...</Text> : null}
             {statusLoading ? <Text style={styles.lineMuted}>Refreshing…</Text> : null}
 
             <View style={{height: 12}} />
@@ -1146,11 +1262,18 @@ useEffect(() => {
                 onPress={clockIn}
                 style={[styles.bigBtn, !canClockIn && styles.disabledBtn]}
                 disabled={!canClockIn}>
-                <Text style={styles.bigBtnText}>CLOCK IN</Text>
+                <Text style={styles.bigBtnText}>
+                  {locationLookupBusy ? 'GETTING LOCATION...' : 'CLOCK IN'}
+                </Text>
               </Pressable>
             ) : (
-              <Pressable onPress={clockOut} style={[styles.bigBtn, styles.bigBtnWarn]}>
-                <Text style={styles.bigBtnText}>CLOCK OUT</Text>
+              <Pressable
+                onPress={clockOut}
+                style={[styles.bigBtn, styles.bigBtnWarn, !canClockOut && styles.disabledBtn]}
+                disabled={!canClockOut}>
+                <Text style={styles.bigBtnText}>
+                  {locationLookupBusy ? 'GETTING LOCATION...' : 'CLOCK OUT'}
+                </Text>
               </Pressable>
             )}
 
@@ -1244,9 +1367,20 @@ useEffect(() => {
                 <Text style={styles.promptBtnTextSecondary}>Not now</Text>
               </Pressable>
 
-              <Pressable onPress={onPromptYes} style={[styles.promptBtn, styles.promptBtnPrimary]}>
+              <Pressable
+                onPress={onPromptYes}
+                style={[
+                  styles.promptBtn,
+                  styles.promptBtnPrimary,
+                  locationLookupBusy && styles.disabledBtn,
+                ]}
+                disabled={locationLookupBusy}>
                 <Text style={styles.promptBtnTextPrimary}>
-                  {promptKind === 'enter' ? 'Clock In' : 'Clock Out'}
+                  {locationLookupBusy
+                    ? 'Getting location...'
+                    : promptKind === 'enter'
+                      ? 'Clock In'
+                      : 'Clock Out'}
                 </Text>
               </Pressable>
             </View>
