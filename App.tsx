@@ -696,8 +696,21 @@ useEffect(() => {
   function locationErrorCode(error: any) {
     if (error == null) return undefined;
     if (typeof error === 'number') return String(error);
-    if (typeof error === 'string') return error;
-    return String(error.code ?? error.status ?? error.name ?? '');
+    if (typeof error === 'string') {
+      const trimmed = error.trim();
+      return /^\d+$/.test(trimmed) ? trimmed : undefined;
+    }
+
+    const candidates = [error.error, error.message, error.code, error.status];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'number') return String(candidate);
+      if (typeof candidate === 'string') {
+        const trimmed = candidate.trim();
+        if (/^\d+$/.test(trimmed)) return trimmed;
+      }
+    }
+
+    return String(error.name ?? '') || undefined;
   }
 
   function locationErrorMessage(error: any) {
@@ -708,17 +721,35 @@ useEffect(() => {
         : String(error?.message || error?.error || error?.reason || '').trim();
     const lower = rawMessage.toLowerCase();
 
-    if (code === '1' || lower.includes('permission')) {
+    if (code === '1') {
       return 'Location permission is not allowed. Open app settings and allow precise location.';
     }
-    if (code === '408' || lower.includes('timeout')) {
-      return 'GPS is taking too long to find your location. Step outside or closer to a window, then try again.';
+    if (code === '0') {
+      return 'Location is unavailable right now. Make sure Location Services are on and try again.';
     }
-    if (lower.includes('unavailable') || lower.includes('unknown') || code === '0') {
-      return 'Location is unavailable right now. Make sure Location Services are on, wait a moment, then try again.';
+    if (code === '2') {
+      return 'Location provider/network issue. Step outside or turn Location Services off and back on.';
     }
-    if (code === '2' || lower.includes('network')) {
-      return 'Location could not connect to the location provider. Check internet and Location Services, then try again.';
+    if (code === '3') {
+      return 'Background location permission is needed. Choose "Allow all the time" in app settings.';
+    }
+    if (code === '408') {
+      return 'GPS timed out. Step outside or near a window and try again.';
+    }
+    if (code === '499') {
+      return 'Location request was cancelled. Try again.';
+    }
+    if (lower.includes('permission')) {
+      return 'Location permission is not allowed. Open app settings and allow precise location.';
+    }
+    if (lower.includes('timeout')) {
+      return 'GPS timed out. Step outside or near a window and try again.';
+    }
+    if (lower.includes('unavailable') || lower.includes('unknown')) {
+      return 'Location is unavailable right now. Make sure Location Services are on and try again.';
+    }
+    if (lower.includes('network')) {
+      return 'Location provider/network issue. Step outside or turn Location Services off and back on.';
     }
     if (rawMessage) return rawMessage;
     return 'Location is unavailable right now. Make sure Location Services are on, then try again.';
