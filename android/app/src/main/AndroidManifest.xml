@@ -1,4 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+﻿<manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -32,7 +32,7 @@
 
         <meta-data
             android:name="com.transistorsoft.locationmanager.license"
-            android:value="YOUR_LICENSE_KEY_HERE" />
+            android:value="eyJhbGciOiJFZERTQSIsImtpZCI6ImVkMjU1MTktbWFpbi12MSJ9.eyJvcyI6ImFuZHJvaWQiLCJhcHBfaWQiOiJjb20uY2xvY2tpbm1vYmlsZSIsIm9yZGVyX251bWJlciI6MTY4MjcsInJlbmV3YWxfdXJsIjoiaHR0cHM6Ly9zaG9wLnRyYW5zaXN0b3Jzb2Z0LmNvbS9jYXJ0LzE2NTA3ODYxNTA1OjE_bm90ZT0xMTE3NyIsImN1c3RvbWVyX2lkIjoxMDE2MywicHJvZHVjdCI6InJlYWN0LW5hdGl2ZS1iYWNrZ3JvdW5kLWdlb2xvY2F0aW9uIiwia2V5X3ZlcnNpb24iOjEsImFsbG93ZWRfc3VmZml4ZXMiOlsiLmRldiIsIi5kZXZlbG9wbWVudCIsIi5zdGFnaW5nIiwiLnN0YWdlIiwiLnFhIiwiLnVhdCIsIi50ZXN0IiwiLmRlYnVnIl0sIm1heF9idWlsZF9zdGFtcCI6MjAyNzA4MTQsImdyYWNlX2J1aWxkcyI6MCwiZW50aXRsZW1lbnRzIjpbImNvcmUiXSwiaWF0IjoxNzg0MDUyNTg3fQ.95u8ziP32eZNyqD0o_ztrmgF7YieMDLafAfkCn6ykym0sBx3lBYqv7cdBAptaHKY5kgorAnJqJNJfpcjn_8yDg" />
 
         <activity
             android:name=".MainActivity"
