@@ -113,6 +113,9 @@ export default function App() {
 
   // Keep a device_uuid (BG provides one in events; we also store last seen server-side)
   const deviceUuidRef = useRef<string | null>(null);
+  const bgInitInFlightRef = useRef<Promise<void> | null>(null);
+  const bgStartedRef = useRef(false);
+  const latestBgRef = useRef<any>({});
 
   // ✅ filteredStores (ONLY DECLARED ONCE)
   const filteredStores = useMemo(() => {
@@ -769,6 +772,13 @@ useEffect(() => {
   }
 
   async function getFreshPosition(): Promise<FreshPositionResult> {
+    if (bgInitInFlightRef.current) {
+      log('waiting for tracking startup before location lookup');
+      await bgInitInFlightRef.current.catch(e => {
+        log(`tracking startup wait failed: ${String(e)}`);
+      });
+    }
+
     try {
       const provider = await BackgroundGeolocation.getProviderState();
       log(
@@ -960,6 +970,19 @@ useEffect(() => {
     log(`👎 prompt dismissed (${promptKind})`);
   }
 
+  latestBgRef.current = {
+    loggedIn,
+    showDebug,
+    promptVisible,
+    storeName,
+    storeCode,
+    refreshStatus,
+    showPrompt,
+    onPromptNo,
+    autoExitClose,
+    clearExitAutoCloseTimer,
+  };
+
   // -----------------------------------
   // BG Geo setup
   // -----------------------------------
@@ -974,13 +997,14 @@ useEffect(() => {
 
     const subLocation = BackgroundGeolocation.onLocation(
       async (location: Location) => {
+        const latest = latestBgRef.current;
         if ((location as any)?.uuid && !deviceUuidRef.current) {
           deviceUuidRef.current = String((location as any).uuid);
         }
 
-        if (showDebug) {
+        if (latest.showDebug) {
           log(
-            `📍 ${location.coords.latitude.toFixed(5)}, ${location.coords.longitude.toFixed(
+            `location ${location.coords.latitude.toFixed(5)}, ${location.coords.longitude.toFixed(
               5,
             )} (acc ${Math.round(location.coords.accuracy)}m)`,
           );
@@ -993,14 +1017,15 @@ useEffect(() => {
             location: location as any,
           });
         } catch (e) {
-          if (showDebug) log(`⚠️ postBgEvent failed: ${String(e)}`);
+          if (latest.showDebug) log(`postBgEvent failed: ${String(e)}`);
         }
       },
-      err => showDebug && log(`❌ location error: ${JSON.stringify(err)}`),
+      err => latestBgRef.current.showDebug && log(`location error: ${JSON.stringify(err)}`),
     );
 
     const subGeofence = BackgroundGeolocation.onGeofence(async (event: GeofenceEvent) => {
-      if (showDebug) log(`🧭 geofence ${event.identifier} ${event.action}`);
+      const latest = latestBgRef.current;
+      if (latest.showDebug) log(`geofence ${event.identifier} ${event.action}`);
 
       try {
         await postBgEvent({
@@ -1009,87 +1034,142 @@ useEffect(() => {
           geofence: event as any,
         });
       } catch (e) {
-        if (showDebug) log(`⚠️ postBgEvent geofence failed: ${String(e)}`);
+        if (latest.showDebug) log(`postBgEvent geofence failed: ${String(e)}`);
       }
 
-      // ✅ Single source of prompt logic + auto-exit-close scheduling
-      if (!loggedIn) return;
+      if (!latest.loggedIn) return;
 
       if (event.action === 'ENTER') {
-        // entering cancels any pending exit-auto-close
-        clearExitAutoCloseTimer();
+        latest.clearExitAutoCloseTimer();
 
-        const fresh = await refreshStatus({silent: true});
-        if (!promptVisible && !fresh?.open_shift) {
-          const name = storeName || storeCode || 'the store';
-          showPrompt('enter', `You arrived at ${name}. Clock in now?`);
-          promptTimerRef.current = setTimeout(() => onPromptNo(), 60000);
+        const fresh = await latest.refreshStatus({silent: true});
+        const current = latestBgRef.current;
+        if (!current.promptVisible && !fresh?.open_shift) {
+          const name = current.storeName || current.storeCode || 'the store';
+          current.showPrompt('enter', `You arrived at ${name}. Clock in now?`);
+          promptTimerRef.current = setTimeout(() => latestBgRef.current.onPromptNo(), 60000);
         }
         return;
       }
 
       if (event.action === 'EXIT') {
-        const fresh = await refreshStatus({silent: true});
+        const fresh = await latest.refreshStatus({silent: true});
 
-        // No open shift = nothing to close
         if (!fresh?.open_shift) {
-          clearExitAutoCloseTimer();
+          latest.clearExitAutoCloseTimer();
           return;
         }
 
-        // Show prompt if not already showing
-        if (!promptVisible) {
-          showPrompt('exit', `You left ${fresh.open_shift.store_name}. Clock out now?`);
-          promptTimerRef.current = setTimeout(() => onPromptNo(), 90000);
+        if (!latestBgRef.current.promptVisible) {
+          latestBgRef.current.showPrompt('exit', `You left ${fresh.open_shift.store_name}. Clock out now?`);
+          promptTimerRef.current = setTimeout(() => latestBgRef.current.onPromptNo(), 90000);
         }
 
-        // 🚫 Prevent double scheduling
         if (exitAutoCloseTimerRef.current) {
-          log('ℹ️ auto-exit-close already scheduled');
+          log('auto-exit-close already scheduled');
           return;
         }
 
-        // Schedule auto-close
         exitAutoCloseTimerRef.current = setTimeout(() => {
-          exitAutoCloseTimerRef.current = null; // clear reference
-          autoExitClose().catch(() => null);
+          exitAutoCloseTimerRef.current = null;
+          latestBgRef.current.autoExitClose().catch(() => null);
         }, EXIT_GRACE_MS);
 
-        log(`⏳ auto-exit-close scheduled in ${Math.round(EXIT_GRACE_MS / 60000)} min`);
+        log(`auto-exit-close scheduled in ${Math.round(EXIT_GRACE_MS / 60000)} min`);
       }
     });
 
     const subProvider = BackgroundGeolocation.onProviderChange(p => {
-      if (showDebug) log(`📡 provider enabled=${p.enabled} status=${p.status}`);
+      if (latestBgRef.current.showDebug) log(`provider enabled=${p.enabled} status=${p.status}`);
     });
 
-    (async () => {
-      const state = await BackgroundGeolocation.ready({
-        desiredAccuracy: -1,
-        distanceFilter: 25,
-        stopOnTerminate: false,
-        startOnBoot: true,
-        disableLocationAuthorizationAlert: true,
-        locationAuthorizationRequest: 'Always',
-        debug: false,
-        logLevel: 0,
-        notification: {
-          title: 'ClockIn',
-          text: 'Location tracking enabled',
-        },
-        geofenceProximityRadius: 200,
-      } as any);
-
-      setBgState(state);
-      log(`ready enabled=${state.enabled} moving=${state.isMoving}`);
-
-      if (!state.enabled) {
-        await BackgroundGeolocation.start();
-        const s2 = await BackgroundGeolocation.getState();
-        setBgState(s2);
-        log(`tracking started enabled=${s2.enabled}`);
+    async function ensureBackgroundGeolocationStarted() {
+      if (bgStartedRef.current) {
+        const state = await BackgroundGeolocation.getState();
+        setBgState(state);
+        log(`tracking already initialized enabled=${state.enabled}`);
+        return;
       }
-    })().catch(e => log(`❌ init error: ${String(e)}`));
+
+      if (bgInitInFlightRef.current) {
+        log('tracking startup already in progress; waiting');
+        await bgInitInFlightRef.current;
+        return;
+      }
+
+      bgInitInFlightRef.current = (async () => {
+        const state = await BackgroundGeolocation.ready({
+          desiredAccuracy: -1,
+          distanceFilter: 25,
+          stopOnTerminate: false,
+          startOnBoot: true,
+          disableLocationAuthorizationAlert: true,
+          locationAuthorizationRequest: 'Always',
+          debug: false,
+          logLevel: 0,
+          notification: {
+            title: 'ClockIn',
+            text: 'Location tracking enabled',
+          },
+          geofenceProximityRadius: 200,
+        } as any);
+
+        setBgState(state);
+        log(`ready enabled=${state.enabled} moving=${state.isMoving}`);
+
+        if (state.enabled) {
+          bgStartedRef.current = true;
+          return;
+        }
+
+        try {
+          await BackgroundGeolocation.start();
+        } catch (e) {
+          const msg = String(e);
+          if (!msg.includes('Waiting for previous start action to complete')) {
+            throw e;
+          }
+
+          log('tracking start already pending; waiting for state');
+          await new Promise<void>(resolve => setTimeout(resolve, 1500));
+        }
+
+        let startedState = await BackgroundGeolocation.getState();
+        if (!startedState.enabled) {
+          await new Promise<void>(resolve => setTimeout(resolve, 1500));
+          startedState = await BackgroundGeolocation.getState();
+        }
+
+        if (!startedState.enabled) {
+          try {
+            await BackgroundGeolocation.start();
+          } catch (e) {
+            const msg = String(e);
+            if (!msg.includes('Waiting for previous start action to complete')) {
+              throw e;
+            }
+            log('tracking start still pending after retry');
+          }
+          await new Promise<void>(resolve => setTimeout(resolve, 1500));
+          startedState = await BackgroundGeolocation.getState();
+        }
+
+        setBgState(startedState);
+        bgStartedRef.current = startedState.enabled;
+        log(`tracking started enabled=${startedState.enabled}`);
+      })();
+
+      try {
+        await bgInitInFlightRef.current;
+      } catch (e) {
+        bgStartedRef.current = false;
+        log(`init error: ${String(e)}`);
+      } finally {
+        bgInitInFlightRef.current = null;
+      }
+    }
+
+    ensureBackgroundGeolocationStarted().catch(e => log(`init error: ${String(e)}`));
 
     return () => {
       subLocation.remove();
@@ -1098,8 +1178,7 @@ useEffect(() => {
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [loggedIn, storeName, storeCode, employeeCode, pin, showDebug, locationReady]);
-
+  }, [locationReady]);
   // -----------------------------------
   // UI
   // -----------------------------------
