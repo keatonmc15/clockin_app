@@ -185,6 +185,7 @@ class Shift(db.Model):
     # ✅ Option 2: capture device uuid on punches
     clock_in_device_uuid = db.Column(db.String(120), nullable=True)
     clock_out_device_uuid = db.Column(db.String(120), nullable=True)
+    clock_out_source = db.Column(db.String(32), nullable=True)
 
     # --- Admin override audit fields (B) ---
     closed_by_admin = db.Column(db.Boolean, nullable=False, default=False)
@@ -435,6 +436,26 @@ def shift_hours(shift: "Shift") -> float:
     mins = shift_minutes(shift)
     return float(Decimal(mins) / Decimal(60)) if mins else 0.0
 
+def shift_clock_out_source(shift: "Shift") -> str:
+    if not shift or not shift.clock_out:
+        return "open"
+    source = (getattr(shift, "clock_out_source", None) or "").strip().lower()
+    if source in {"employee", "auto_exit", "admin"}:
+        return source
+    if (getattr(shift, "admin_closed_by", None) or "").strip().upper() == "AUTO_EXIT":
+        return "auto_exit"
+    if getattr(shift, "closed_by_admin", False):
+        return "admin"
+    return "employee"
+
+def shift_clock_out_label(shift: "Shift") -> str:
+    return {
+        "employee": "Employee Clock-Out",
+        "auto_exit": "Auto Exit",
+        "admin": "Admin Close",
+        "open": "Open",
+    }.get(shift_clock_out_source(shift), "Employee Clock-Out")
+
 def last_completed_payroll_week(reference: datetime | None = None):
     ref_local = reference or now_local()
     weekday = ref_local.weekday()  # Monday=0
@@ -661,6 +682,8 @@ def inject_helpers():
         minutes_to_human=minutes_to_human,
         minutes_to_short=minutes_to_short,
         minutes_to_decimal_hours=minutes_to_decimal_hours,
+        shift_clock_out_source=shift_clock_out_source,
+        shift_clock_out_label=shift_clock_out_label,
         suggest_employee_username=suggest_employee_username
     )
 
@@ -751,6 +774,7 @@ with app.app_context():
 
     _ensure_column("shifts", "clock_in_device_uuid", "VARCHAR(120)")
     _ensure_column("shifts", "clock_out_device_uuid", "VARCHAR(120)")
+    _ensure_column("shifts", "clock_out_source", "VARCHAR(32)")
 
 # -----------------------------
 # Fingerprint (DEBUG)
@@ -1262,6 +1286,7 @@ def api_mobile_clock_out():
     open_shift.clock_out_lat = lat
     open_shift.clock_out_lng = lon
     open_shift.clock_out_device_uuid = device_uuid
+    open_shift.clock_out_source = "employee"
 
     db.session.commit()
 
@@ -1291,6 +1316,8 @@ def api_mobile_auto_exit_close():
     accuracy_m = data.get("accuracy_m")
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
+    expected_shift_id = data.get("shift_id")
+    expected_store_id = data.get("store_id")
 
     # optional: reason from app
     reason = (data.get("reason") or "Auto-close after EXIT").strip()
@@ -1319,6 +1346,28 @@ def api_mobile_auto_exit_close():
     )
     if not open_shift:
         return jsonify({"ok": True, "already_closed": True, "message": "No open shift."}), 200
+
+    try:
+        expected_shift_id = int(expected_shift_id) if expected_shift_id is not None else None
+        expected_store_id = int(expected_store_id) if expected_store_id is not None else None
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "error": "invalid_expected_shift"}), 400
+
+    if expected_shift_id is not None and open_shift.id != expected_shift_id:
+        return jsonify({
+            "ok": False,
+            "error": "open_shift_changed",
+            "message": "Open shift changed before auto-close.",
+            "open_shift_id": open_shift.id,
+        }), 409
+
+    if expected_store_id is not None and open_shift.store_id != expected_store_id:
+        return jsonify({
+            "ok": False,
+            "error": "open_shift_store_changed",
+            "message": "Open shift store changed before auto-close.",
+            "open_shift_id": open_shift.id,
+        }), 409
 
     store = Store.query.get(open_shift.store_id)
     if not store:
@@ -1351,7 +1400,7 @@ def api_mobile_auto_exit_close():
     # Touch employee device last-seen
     _touch_employee_device(emp, device_uuid, device_label)
 
-    # Close shift as admin override
+    # Close the employee's current open shift after confirmed geofence exit.
     old_in = open_shift.clock_in
     old_out = open_shift.clock_out
 
@@ -1359,8 +1408,9 @@ def api_mobile_auto_exit_close():
     open_shift.clock_out_lat = lat
     open_shift.clock_out_lng = lon
     open_shift.clock_out_device_uuid = device_uuid
+    open_shift.clock_out_source = "auto_exit"
 
-    open_shift.closed_by_admin = True
+    open_shift.closed_by_admin = False
     open_shift.admin_closed_by = "AUTO_EXIT"
     open_shift.admin_closed_at = now_utc()
     open_shift.admin_close_reason = reason
@@ -1903,6 +1953,7 @@ def api_clockout():
     open_shift.clock_out_lat = lat
     open_shift.clock_out_lng = lng
     open_shift.clock_out_device_uuid = device_uuid
+    open_shift.clock_out_source = "employee"
     db.session.commit()
 
     mins = shift_minutes(open_shift)
@@ -2957,7 +3008,27 @@ def admin_close_shift():
         flash("Shift already closed.", "success")
         return redirect(url_for("admin_shifts"))
 
+    old_in = s.clock_in
+    old_out = s.clock_out
+
     s.clock_out = now_utc()
+    s.clock_out_source = "admin"
+    s.closed_by_admin = True
+    s.admin_closed_by = admin_username()
+    s.admin_closed_at = now_utc()
+    s.admin_close_reason = "Admin close from shifts list"
+
+    audit = ShiftEditAudit(
+        shift_id=s.id,
+        action="admin_close",
+        editor=admin_username(),
+        reason=s.admin_close_reason,
+        old_clock_in=old_in,
+        old_clock_out=old_out,
+        new_clock_in=s.clock_in,
+        new_clock_out=s.clock_out
+    )
+    db.session.add(audit)
     db.session.commit()
     flash("Shift closed.", "success")
     return redirect(url_for("admin_shifts"))
@@ -2983,6 +3054,7 @@ def admin_force_close_shift():
     old_out = s.clock_out
 
     s.clock_out = now_utc()
+    s.clock_out_source = "admin"
     s.closed_by_admin = True
     s.admin_closed_by = admin_username()
     s.admin_closed_at = now_utc()
@@ -3043,6 +3115,7 @@ def admin_shift_new():
             store_id=int(store_id),
             clock_in=cin,
             clock_out=cout,
+            clock_out_source="admin" if cout else None,
             closed_by_admin=True,
             admin_closed_by=admin_username(),
             admin_closed_at=now_utc(),
@@ -3111,6 +3184,10 @@ def admin_shift_edit(shift_id: int):
         s.store_id = int(store_id) if store_id else s.store_id
         s.clock_in = cin
         s.clock_out = cout
+        if cout:
+            s.clock_out_source = "admin"
+        else:
+            s.clock_out_source = None
 
         s.closed_by_admin = True
         s.admin_closed_by = admin_username()
@@ -3193,6 +3270,7 @@ def admin_payroll():
             "store": store_name,
             "clock_in": fmt_dt(s.clock_in),
             "clock_out": fmt_dt(s.clock_out),
+            "clock_out_source": shift_clock_out_label(s),
             "minutes": mins,
             "human_short": minutes_to_short(mins),
         })
@@ -3261,9 +3339,9 @@ def admin_payroll():
         w.writerow([])
 
         w.writerow(["Shift Detail"])
-        w.writerow(["Employee", "Store", "Clock In", "Clock Out", "Minutes", "Time (Short)"])
+        w.writerow(["Employee", "Store", "Clock In", "Clock Out", "Closed By", "Minutes", "Time (Short)"])
         for r in rows:
-            w.writerow([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["minutes"], r["human_short"]])
+            w.writerow([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["clock_out_source"], r["minutes"], r["human_short"]])
 
         output = si.getvalue()
         filename = f"payroll_{start_dt.date().isoformat()}_to_{end_dt.date().isoformat()}.csv"
@@ -3329,7 +3407,7 @@ def admin_payroll():
         ws.freeze_panes = "A6"
 
         ws2 = wb.create_sheet("Shift Detail")
-        detail_headers = ["Employee", "Store", "Clock In", "Clock Out", "Minutes", "Time (Short)"]
+        detail_headers = ["Employee", "Store", "Clock In", "Clock Out", "Closed By", "Minutes", "Time (Short)"]
         ws2.append(detail_headers)
 
         for col_idx in range(1, len(detail_headers) + 1):
@@ -3338,7 +3416,7 @@ def admin_payroll():
             c.alignment = wrap
 
         for r in rows:
-            ws2.append([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["minutes"], r["human_short"]])
+            ws2.append([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["clock_out_source"], r["minutes"], r["human_short"]])
 
         max_col2 = len(detail_headers)
         for row in ws2.iter_rows(min_row=1, max_row=ws2.max_row, min_col=1, max_col=max_col2):

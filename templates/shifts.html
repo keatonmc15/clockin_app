@@ -63,6 +63,7 @@
           <th>Store</th>
           <th>Clock In</th>
           <th>Clock Out</th>
+          <th>Closed By</th>
           <th>Worked</th>
           <th></th>
         </tr>
@@ -81,6 +82,13 @@
             <td>{{ s.store.name }}</td>
             <td>{{ fmt_dt(s.clock_in) }}</td>
             <td>{{ fmt_dt(s.clock_out) }}</td>
+            <td>
+              {% if s.clock_out %}
+                <span style="display:inline-block; padding:3px 8px; border-radius:999px; background:#eef2ff; color:#1f2937; font-size:12px; font-weight:700;">{{ shift_clock_out_label(s) }}</span>
+              {% else %}
+                <span style="display:inline-block; padding:3px 8px; border-radius:999px; background:#ecfdf5; color:#166534; font-size:12px; font-weight:700;">Open</span>
+              {% endif %}
+            </td>
             <td>
               {% if s.clock_out %}
                 {{ minutes_to_human(shift_minutes(s)) }}
@@ -106,7 +114,7 @@
 
         {% if shifts|length == 0 %}
           <tr>
-            <td colspan="7" style="padding:16px; color:#6b7280;">No shifts found.</td>
+            <td colspan="8" style="padding:16px; color:#6b7280;">No shifts found.</td>
           </tr>
         {% endif %}
       </tbody>

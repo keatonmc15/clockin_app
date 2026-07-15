@@ -13,6 +13,7 @@
       <div><strong>Clock In:</strong> {{ fmt_dt(s.clock_in) }}</div>
       <div><strong>Clock Out:</strong> {{ fmt_dt(s.clock_out) or "—" }}</div>
       {% if s.clock_out %}
+        <div><strong>Closed By:</strong> <span class="badge bg-secondary">{{ shift_clock_out_label(s) }}</span></div>
         <div><strong>Worked:</strong> {{ minutes_to_human(shift_minutes(s)) }}</div>
       {% endif %}
     </div>

@@ -142,6 +142,7 @@
             <th>Store</th>
             <th>Clock In</th>
             <th>Clock Out</th>
+            <th>Closed By</th>
             <th class="right">Minutes</th>
             <th class="right">Time</th>
           </tr>
@@ -153,6 +154,7 @@
               <td>{{ r.store }}</td>
               <td>{{ r.clock_in }}</td>
               <td>{{ r.clock_out }}</td>
+              <td><span class="payroll-pill">{{ r.clock_out_source }}</span></td>
               <td class="right">{{ r.minutes }}</td>
               <td class="right">{{ r.human_short }}</td>
             </tr>

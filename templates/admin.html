@@ -167,6 +167,7 @@
                   <th>Clock In</th>
                   <th>Clock Out</th>
                   <th>Status</th>
+                  <th>Closed By</th>
                 </tr>
               </thead>
               <tbody>
@@ -181,6 +182,13 @@
                         Closed
                       {% else %}
                         <span style="color:#16a34a; font-weight:700;">Open</span>
+                      {% endif %}
+                    </td>
+                    <td>
+                      {% if s.clock_out %}
+                        <span style="display:inline-block; padding:3px 8px; border-radius:999px; background:#eef2ff; color:#1f2937; font-size:12px; font-weight:700;">{{ shift_clock_out_label(s) }}</span>
+                      {% else %}
+                        <span class="muted">-</span>
                       {% endif %}
                     </td>
                   </tr>
