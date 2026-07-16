@@ -607,6 +607,8 @@ def _extract_location_coords(payload: dict) -> tuple[dict, dict]:
     loc = {}
     if isinstance(payload.get("location"), dict):
         loc = payload.get("location") or {}
+    elif isinstance(payload.get("geofence"), dict) and isinstance((payload.get("geofence") or {}).get("location"), dict):
+        loc = (payload.get("geofence") or {}).get("location") or {}
     elif isinstance(payload.get("params"), dict) and isinstance((payload.get("params") or {}).get("location"), dict):
         loc = (payload.get("params") or {}).get("location") or {}
     elif isinstance(payload.get("data"), dict) and isinstance((payload.get("data") or {}).get("location"), dict):
@@ -615,12 +617,16 @@ def _extract_location_coords(payload: dict) -> tuple[dict, dict]:
     coords = (loc.get("coords") or {}) if isinstance(loc, dict) else {}
     if not isinstance(coords, dict):
         coords = {}
+    if not coords and isinstance(payload.get("coords"), dict):
+        coords = payload.get("coords") or {}
     return loc, coords
 
 def _extract_event_at(payload: dict, loc: dict | None) -> datetime | None:
     ts_ms = payload.get("timestamp")
     if ts_ms is None and isinstance(loc, dict):
         ts_ms = loc.get("timestamp")
+    if ts_ms is None and isinstance(payload.get("geofence"), dict):
+        ts_ms = (payload.get("geofence") or {}).get("timestamp")
 
     if isinstance(ts_ms, (int, float)) and ts_ms > 0:
         try:
@@ -628,6 +634,95 @@ def _extract_event_at(payload: dict, loc: dict | None) -> datetime | None:
         except Exception:
             return None
     return None
+
+def _extract_device_uuid_from_bg_payload(payload: dict, loc: dict | None) -> str | None:
+    candidates = [
+        payload.get("device_uuid"),
+        payload.get("uuid"),
+    ]
+    if isinstance(payload.get("device"), dict):
+        candidates.append((payload.get("device") or {}).get("uuid"))
+    if isinstance(loc, dict):
+        candidates.append(loc.get("uuid"))
+    if isinstance(payload.get("geofence"), dict):
+        gf = payload.get("geofence") or {}
+        candidates.append(gf.get("uuid"))
+        if isinstance(gf.get("location"), dict):
+            candidates.append((gf.get("location") or {}).get("uuid"))
+
+    for candidate in candidates:
+        value = _coerce_str(candidate)
+        if value:
+            return value
+    return None
+
+def _extract_bg_float(payload: dict, coords: dict, *names: str) -> float | None:
+    for name in names:
+        value = payload.get(name)
+        if value is None:
+            value = coords.get(name)
+        if value is None and name == "lng":
+            value = payload.get("lon") or coords.get("longitude")
+        if value is None and name == "lon":
+            value = payload.get("lng") or coords.get("longitude")
+        if value is None and name == "lat":
+            value = coords.get("latitude")
+        if value is None and name in {"accuracy", "accuracy_m"}:
+            value = coords.get("accuracy")
+        if value is not None:
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+def _resolve_bg_event_shift(payload: dict, device_uuid: str | None):
+    employee_code = normalize_employee_code(
+        payload.get("employee_code") or payload.get("username_code") or payload.get("employeeCode") or ""
+    )
+    expected_shift_id = payload.get("shift_id") or payload.get("shiftId")
+    expected_store_id = payload.get("store_id") or payload.get("storeId")
+
+    try:
+        expected_shift_id = int(expected_shift_id) if expected_shift_id is not None else None
+        expected_store_id = int(expected_store_id) if expected_store_id is not None else None
+    except (TypeError, ValueError):
+        return None, None, None, "invalid_expected_shift"
+
+    emp = None
+    if employee_code:
+        emp = Employee.query.filter(func.lower(Employee.username_code) == employee_code).first()
+        if emp and not emp.active:
+            return emp, None, None, "inactive_employee"
+
+    q = Shift.query.filter(Shift.clock_out.is_(None))
+    if emp:
+        q = q.filter(Shift.employee_id == emp.id)
+    elif device_uuid:
+        q = q.filter(Shift.clock_in_device_uuid == device_uuid)
+    else:
+        return None, None, None, "missing_employee_or_device"
+
+    if expected_shift_id is not None:
+        q = q.filter(Shift.id == expected_shift_id)
+
+    open_shift = q.order_by(Shift.clock_in.desc()).first()
+    if not open_shift:
+        return emp, None, None, "no_open_shift"
+
+    if not emp:
+        emp = Employee.query.get(open_shift.employee_id)
+        if emp and not emp.active:
+            return emp, None, None, "inactive_employee"
+
+    if expected_store_id is not None and open_shift.store_id != expected_store_id:
+        return emp, open_shift, None, "open_shift_store_changed"
+
+    store = Store.query.get(open_shift.store_id)
+    if not store:
+        return emp, open_shift, None, "store_not_found"
+
+    return emp, open_shift, store, None
 
 def _coerce_str(val, max_len: int = 120) -> str | None:
     if val is None:
@@ -1520,30 +1615,29 @@ def api_mobile_bg_event():
 
     loc, coords = _extract_location_coords(payload)
 
-    device_uuid = payload.get("uuid")
-    if not device_uuid and isinstance(payload.get("device"), dict):
-        device_uuid = (payload.get("device") or {}).get("uuid")
-    if device_uuid is not None:
-        device_uuid = str(device_uuid)
+    device_uuid = _extract_device_uuid_from_bg_payload(payload, loc)
 
     is_moving = payload.get("is_moving")
     if is_moving is None and isinstance(loc, dict):
         is_moving = loc.get("is_moving")
 
-    lat = coords.get("latitude")
-    lng = coords.get("longitude")
-    accuracy = coords.get("accuracy")
+    lat = _extract_bg_float(payload, coords, "lat", "latitude")
+    lng = _extract_bg_float(payload, coords, "lng", "lon", "longitude")
+    accuracy = _extract_bg_float(payload, coords, "accuracy_m", "accuracy")
 
     event_at = _extract_event_at(payload, loc)
+    ping_created = False
+    ping_id = None
+    ping_skipped = None
 
     try:
         evt = MobileEvent(
             event_type=event_type,
             device_uuid=device_uuid,
             is_moving=bool(is_moving) if isinstance(is_moving, bool) else None,
-            lat=float(lat) if isinstance(lat, (int, float)) else None,
-            lng=float(lng) if isinstance(lng, (int, float)) else None,
-            accuracy=float(accuracy) if isinstance(accuracy, (int, float)) else None,
+            lat=lat,
+            lng=lng,
+            accuracy=accuracy,
             event_at=event_at,
             received_at=now_utc(),
             raw_json=_safe_json_dumps(payload),
@@ -1554,7 +1648,68 @@ def api_mobile_bg_event():
         app.logger.exception("MOBILE_BG_EVENT_SAVE_FAILED")
         return jsonify({"ok": False, "error": "db_error"}), 500
 
-    return jsonify({"ok": True, "id": evt.id})
+    try:
+        emp, open_shift, store, resolve_error = _resolve_bg_event_shift(payload, device_uuid)
+        if resolve_error:
+            ping_skipped = resolve_error
+        elif lat is None or lng is None:
+            ping_skipped = "missing_location"
+        elif not emp or not open_shift or not store:
+            ping_skipped = "missing_open_shift"
+        else:
+            geofence_action = ""
+            if isinstance(payload.get("geofence"), dict):
+                geofence_action = str((payload.get("geofence") or {}).get("action") or "").strip().upper()
+            important_geofence = event_type == "geofence" and geofence_action in {"ENTER", "EXIT"}
+            min_interval = timedelta(seconds=60) if important_geofence else timedelta(minutes=15)
+            cutoff = now_utc() - min_interval
+            recent_ping = (
+                LocationPing.query
+                .filter(LocationPing.shift_id == open_shift.id, LocationPing.created_at >= cutoff)
+                .order_by(LocationPing.created_at.desc())
+                .first()
+            )
+
+            if recent_ping:
+                ping_skipped = "rate_limited"
+            else:
+                dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
+                ping = LocationPing(
+                    employee_id=emp.id,
+                    shift_id=open_shift.id,
+                    store_id=store.id,
+                    lat=lat,
+                    lng=lng,
+                    dist_m=float(dist_m),
+                    inside_radius=bool(dist_m <= store.geofence_radius_m),
+                    created_at=now_utc(),
+                )
+                db.session.add(ping)
+                db.session.commit()
+                ping_created = True
+                ping_id = ping.id
+                log_event(
+                    "BG_PING_OK",
+                    employee_id=emp.id,
+                    shift_id=open_shift.id,
+                    store_id=store.id,
+                    event_type=event_type,
+                    dist_m=round(dist_m, 1),
+                    inside=ping.inside_radius,
+                    device_uuid=device_uuid or "",
+                )
+    except Exception:
+        db.session.rollback()
+        ping_skipped = "ping_processing_error"
+        app.logger.exception("MOBILE_BG_EVENT_PING_PROCESSING_FAILED event_id=%s", evt.id)
+
+    return jsonify({
+        "ok": True,
+        "id": evt.id,
+        "ping_created": ping_created,
+        "ping_id": ping_id,
+        "ping_skipped": ping_skipped,
+    })
 
 @app.post("/api/mobile/report-issue")
 def api_mobile_report_issue():
