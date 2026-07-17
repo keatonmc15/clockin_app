@@ -2,8 +2,8 @@ const API_BASE = __DEV__ ? 'http://10.0.2.2:5000' : 'https://clockin-app.onrende
 const DEVICE_TOKEN = "KeatonClockInMobile_Venom97Triad1997151506172024!";
 
 type Meta = {
-  device_uuid?: string;
-  device_label?: string;
+  device_uuid?: string | null;
+  device_label?: string | null;
 };
 
 export async function postBgEvent(payload: any, meta?: Meta) {
