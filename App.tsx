@@ -64,20 +64,10 @@ type FreshPositionResult = {
   errorMessage?: string;
 };
 
-type PendingAutoExit = {
-  employeeCode: string;
-  shiftId: number;
-  storeId: number;
-  storeName?: string;
-  exitAt: number;
-  deadlineAt: number;
-};
-
 const API_BASE = __DEV__ ? 'http://10.0.2.2:5000' : 'https://clockin-app.onrender.com';
 const DEVICE_TOKEN = 'KeatonClockInMobile_Venom97Triad1997151506172024!';
 const SESSION_KEY = 'clockin_mobile_employee_session_v1';
 const SELECTED_STORE_KEY = 'clockin_mobile_selected_store_v1';
-const PENDING_AUTO_EXIT_KEY = 'clockin_mobile_pending_auto_exit_v1';
 
 function headersJson() {
   return {
@@ -150,82 +140,7 @@ export default function App() {
   const promptTimerRef = useRef<any>(null);
 
   // ✅ Auto-close after EXIT grace period
-  const EXIT_GRACE_MS = 8 * 60 * 1000; // 8 minutes (change to 20_000 for fast testing)
-  const exitAutoCloseTimerRef = useRef<any>(null);
-  const exitAutoCloseShiftIdRef = useRef<number | null>(null);
-  const autoExitCloseInFlightRef = useRef(false);
-
-  function clearExitAutoCloseTimer() {
-    if (exitAutoCloseTimerRef.current) {
-      clearTimeout(exitAutoCloseTimerRef.current);
-      exitAutoCloseTimerRef.current = null;
-    }
-    exitAutoCloseShiftIdRef.current = null;
-  }
-
-  async function clearPendingAutoExit(reason?: string) {
-    clearExitAutoCloseTimer();
-    try {
-      await AsyncStorage.removeItem(PENDING_AUTO_EXIT_KEY);
-      if (reason) log(`pending auto-exit cleared: ${reason}`);
-    } catch (e) {
-      log(`pending auto-exit clear failed: ${String(e)}`);
-    }
-  }
-
-  function scheduleAutoExitTimer(pending: PendingAutoExit) {
-    clearExitAutoCloseTimer();
-    exitAutoCloseShiftIdRef.current = pending.shiftId;
-
-    const delayMs = Math.max(0, pending.deadlineAt - Date.now());
-    exitAutoCloseTimerRef.current = setTimeout(() => {
-      exitAutoCloseTimerRef.current = null;
-      exitAutoCloseShiftIdRef.current = null;
-      latestBgRef.current.processPendingAutoExit?.('timer').catch(() => null);
-    }, delayMs);
-
-    log(`auto-exit-close scheduled in ${Math.ceil(delayMs / 60000)} min`);
-  }
-
-  async function savePendingAutoExit(pending: PendingAutoExit) {
-    await AsyncStorage.setItem(PENDING_AUTO_EXIT_KEY, JSON.stringify(pending));
-    scheduleAutoExitTimer(pending);
-    log(`pending auto-exit saved shift=${pending.shiftId} store=${pending.storeId}`);
-  }
-
-  async function loadPendingAutoExit(): Promise<PendingAutoExit | null> {
-    try {
-      const raw = await AsyncStorage.getItem(PENDING_AUTO_EXIT_KEY);
-      if (!raw) return null;
-
-      const parsed = JSON.parse(raw);
-      const pending: PendingAutoExit = {
-        employeeCode: String(parsed?.employeeCode || '').trim().toLowerCase(),
-        shiftId: Number(parsed?.shiftId),
-        storeId: Number(parsed?.storeId),
-        storeName: parsed?.storeName ? String(parsed.storeName) : undefined,
-        exitAt: Number(parsed?.exitAt),
-        deadlineAt: Number(parsed?.deadlineAt),
-      };
-
-      if (
-        !pending.employeeCode ||
-        !Number.isFinite(pending.shiftId) ||
-        !Number.isFinite(pending.storeId) ||
-        !Number.isFinite(pending.exitAt) ||
-        !Number.isFinite(pending.deadlineAt)
-      ) {
-        await clearPendingAutoExit('invalid saved record');
-        return null;
-      }
-
-      return pending;
-    } catch (e) {
-      log(`pending auto-exit load failed: ${String(e)}`);
-      await clearPendingAutoExit('unreadable saved record');
-      return null;
-    }
-  }
+  const BG_HEARTBEAT_SECONDS = 15 * 60;
 
   function clearPromptTimer() {
     if (promptTimerRef.current) {
@@ -505,7 +420,6 @@ export default function App() {
           `✅ status: CLOCKED IN shift=${fresh.open_shift.shift_id} store=${fresh.open_shift.store_name}`,
         );
       } else {
-        await clearPendingAutoExit('server reports no open shift');
         log(`✅ status: NOT CLOCKED IN`);
       }
 
@@ -527,13 +441,9 @@ export default function App() {
   // Poll status every 45s while logged in
   useEffect(() => {
     if (!loggedIn) return;
-    refreshStatus({silent: true}).then(() =>
-      latestBgRef.current.processPendingAutoExit?.('status-poll').catch(() => null),
-    );
+    refreshStatus({silent: true});
     const id = setInterval(() => {
-      refreshStatus({silent: true}).then(() =>
-        latestBgRef.current.processPendingAutoExit?.('status-poll').catch(() => null),
-      );
+      refreshStatus({silent: true});
     }, 45000);
     return () => clearInterval(id);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -543,9 +453,7 @@ export default function App() {
   useEffect(() => {
     const onAppState = (s: AppStateStatus) => {
       if (s === 'active' && loggedIn) {
-        refreshStatus({silent: true}).then(() =>
-          latestBgRef.current.processPendingAutoExit?.('app-active').catch(() => null),
-        );
+        refreshStatus({silent: true});
       }
       if (s === 'active') {
         checkLocationPermission();
@@ -750,7 +658,6 @@ useEffect(() => {
         {silent: true},
         {employeeCode: codeClean, pin: pinClean},
       );
-      await latestBgRef.current.processPendingAutoExit?.('login');
     } catch (e) {
       log(`❌ /api/mobile/me exception: ${String(e)}`);
       Alert.alert('Login failed', 'Network error. Try again.');
@@ -767,7 +674,6 @@ useEffect(() => {
     setEmployeeCode('');
     setPin('');
     setStatus(null);
-    await clearPendingAutoExit('employee logged out');
     await AsyncStorage.removeItem(SESSION_KEY);
     log('👋 logged out');
   }
@@ -949,11 +855,10 @@ useEffect(() => {
 
     log(`✅ /api/mobile/clock-in OK shift_id=${data.shift_id}`);
     hidePrompt();
-    await clearPendingAutoExit('new clock-in');
     await refreshStatus();
   }
 
-  async function clockOut() {
+  async function clockOut(allowOutsideGeofence = false) {
     if (!loggedIn) return;
     const permissionOk = await ensureLocationReadyForClockIn();
     if (!permissionOk) return;
@@ -979,127 +884,27 @@ useEffect(() => {
       accuracy_m: loc.coords.accuracy,
       device_uuid: deviceUuidRef.current,
       device_label: deviceLabel(),
+      allow_outside_geofence: allowOutsideGeofence,
     });
 
     if (!res.ok) {
       const msg = data?.message || data?.error || `Clock-out failed (${res.status})`;
       log(`❌ /api/mobile/clock-out failed: ${msg}`);
+      if (res.status === 409 && data?.error === 'outside_store_geofence' && data?.requires_confirmation) {
+        Alert.alert('Outside store location', 'You appear to be outside the store location. Clock out anyway?', [
+          {text: 'Not now', style: 'cancel'},
+          {text: 'Clock Out', style: 'destructive', onPress: () => clockOut(true)},
+        ]);
+        return;
+      }
       Alert.alert('Clock-out failed', msg);
       return;
     }
 
     log(`✅ /api/mobile/clock-out OK minutes=${data.minutes}`);
     hidePrompt();
-    await clearPendingAutoExit('manual clock-out completed');
     await refreshStatus();
   }
-
-  async function autoExitClose(pending?: PendingAutoExit) {
-    if (!loggedIn) return;
-    if (autoExitCloseInFlightRef.current) {
-      log('auto-exit-close skipped (already running)');
-      return;
-    }
-
-    autoExitCloseInFlightRef.current = true;
-
-    try {
-      const fresh = await refreshStatus({silent: true});
-      if (!fresh?.open_shift) {
-        log('ℹ️ auto-exit-close skipped (no open shift)');
-        await clearPendingAutoExit('no open shift at auto-close');
-        return;
-      }
-
-      const shiftId = fresh.open_shift.shift_id;
-      const storeId = fresh.open_shift.store_id;
-
-      if (pending && (pending.shiftId !== shiftId || pending.storeId !== storeId)) {
-        log(
-          `auto-exit-close skipped (pending shift/store stale pending=${pending.shiftId}/${pending.storeId} open=${shiftId}/${storeId})`,
-        );
-        await clearPendingAutoExit('pending shift/store is stale');
-        return;
-      }
-
-      const locationResult = await getFreshPosition();
-      if (!locationResult.location) {
-        log('auto-exit-close: no location fix');
-        return;
-      }
-      const loc = locationResult.location;
-
-      const {res, data} = await apiPost('/api/mobile/auto-exit-close', {
-        username_code: employeeCode.trim().toLowerCase(),
-        pin: pin.trim(),
-        shift_id: shiftId,
-        store_id: storeId,
-        lat: loc.coords.latitude,
-        lon: loc.coords.longitude,
-        accuracy_m: loc.coords.accuracy,
-        device_uuid: deviceUuidRef.current,
-        device_label: deviceLabel(),
-        reason: 'Auto-close after EXIT (grace elapsed)',
-      });
-
-      if (!res.ok) {
-        const msg = data?.error || `auto-exit-close failed (${res.status})`;
-        log(`❌ auto-exit-close failed: ${msg}`);
-        if (
-          res.status === 409 &&
-          ['still_inside_or_near_store', 'open_shift_changed', 'open_shift_store_changed'].includes(
-            String(data?.error || ''),
-          )
-        ) {
-          await clearPendingAutoExit(String(data?.error || 'auto-exit no longer applies'));
-        }
-        return;
-      }
-
-      log(`✅ auto-exit-close OK shift_id=${data.shift_id} minutes=${data.minutes}`);
-      await clearPendingAutoExit('auto-close completed');
-      await refreshStatus({silent: true});
-    } finally {
-      autoExitCloseInFlightRef.current = false;
-    }
-  }
-
-  async function processPendingAutoExit(trigger: string) {
-    if (!loggedIn) return;
-
-    const pending = await loadPendingAutoExit();
-    if (!pending) return;
-
-    const codeClean = employeeCode.trim().toLowerCase();
-    if (pending.employeeCode !== codeClean) {
-      await clearPendingAutoExit('employee changed');
-      return;
-    }
-
-    const fresh = await refreshStatus({silent: true});
-    if (!fresh?.open_shift) {
-      await clearPendingAutoExit('no open shift while processing pending');
-      return;
-    }
-
-    if (fresh.open_shift.shift_id !== pending.shiftId || fresh.open_shift.store_id !== pending.storeId) {
-      await clearPendingAutoExit('open shift/store changed');
-      return;
-    }
-
-    const remainingMs = pending.deadlineAt - Date.now();
-    if (remainingMs > 0) {
-      if (!exitAutoCloseTimerRef.current || exitAutoCloseShiftIdRef.current !== pending.shiftId) {
-        scheduleAutoExitTimer(pending);
-      }
-      log(`pending auto-exit still in grace (${Math.ceil(remainingMs / 60000)} min) via ${trigger}`);
-      return;
-    }
-
-    log(`pending auto-exit deadline passed via ${trigger}; attempting close`);
-    await autoExitClose(pending);
-  }
-
   async function onPromptYes() {
     hidePrompt();
 
@@ -1126,10 +931,22 @@ useEffect(() => {
     log(`👎 prompt dismissed (${promptKind})`);
   }
 
+  function bgEventContext() {
+    const currentOpenShift = latestBgRef.current.status?.open_shift || status?.open_shift || null;
+    if (!latestBgRef.current.loggedIn || !currentOpenShift) return {};
+
+    return {
+      employee_code: String(latestBgRef.current.employeeCode || '').trim().toLowerCase(),
+      shift_id: currentOpenShift.shift_id,
+      store_id: currentOpenShift.store_id,
+    };
+  }
+
   latestBgRef.current = {
     loggedIn,
     employeeCode,
     pin,
+    status,
     showDebug,
     promptVisible,
     storeName,
@@ -1137,10 +954,6 @@ useEffect(() => {
     refreshStatus,
     showPrompt,
     onPromptNo,
-    autoExitClose,
-    processPendingAutoExit,
-    clearPendingAutoExit,
-    clearExitAutoCloseTimer,
   };
 
   // -----------------------------------
@@ -1174,14 +987,20 @@ useEffect(() => {
           await postBgEvent({
             event: 'location',
             timestamp: location.timestamp,
+            lat: location.coords.latitude,
+            lng: location.coords.longitude,
+            accuracy_m: location.coords.accuracy,
+            ...bgEventContext(),
             location: location as any,
+          }, {
+            device_uuid: deviceUuidRef.current || (location as any)?.uuid,
+            device_label: deviceLabel(),
           });
         } catch (e) {
-          if (latest.showDebug) log(`postBgEvent failed: ${String(e)}`);
+          log(`postBgEvent failed: ${String(e)}`);
         }
 
         if (latest.loggedIn) {
-          latest.processPendingAutoExit?.('location').catch(() => null);
         }
       },
       err => latestBgRef.current.showDebug && log(`location error: ${JSON.stringify(err)}`),
@@ -1192,19 +1011,28 @@ useEffect(() => {
       if (latest.showDebug) log(`geofence ${event.identifier} ${event.action}`);
 
       try {
+        const gfLocation = (event as any)?.location;
+        const gfCoords = gfLocation?.coords || {};
         await postBgEvent({
           event: 'geofence',
           timestamp: Date.now(),
+          geofence_action: event.action,
+          lat: gfCoords.latitude,
+          lng: gfCoords.longitude,
+          accuracy_m: gfCoords.accuracy,
+          ...bgEventContext(),
           geofence: event as any,
+        }, {
+          device_uuid: deviceUuidRef.current || gfLocation?.uuid,
+          device_label: deviceLabel(),
         });
       } catch (e) {
-        if (latest.showDebug) log(`postBgEvent geofence failed: ${String(e)}`);
+        log(`postBgEvent geofence failed: ${String(e)}`);
       }
 
       if (!latest.loggedIn) return;
 
       if (event.action === 'ENTER') {
-        await latest.clearPendingAutoExit('geofence enter');
 
         const fresh = await latest.refreshStatus({silent: true});
         const current = latestBgRef.current;
@@ -1220,7 +1048,6 @@ useEffect(() => {
         const fresh = await latest.refreshStatus({silent: true});
 
         if (!fresh?.open_shift) {
-          await latest.clearPendingAutoExit('exit event with no open shift');
           return;
         }
 
@@ -1228,43 +1055,52 @@ useEffect(() => {
           latestBgRef.current.showPrompt('exit', `You left ${fresh.open_shift.store_name}. Clock out now?`);
           promptTimerRef.current = setTimeout(() => latestBgRef.current.onPromptNo(), 90000);
         }
+      }
+    });
 
-        const shiftId = fresh.open_shift.shift_id;
-        const storeId = fresh.open_shift.store_id;
-        const codeClean = String(latestBgRef.current.employeeCode || '').trim().toLowerCase();
-        const existingPending = await loadPendingAutoExit();
-        if (
-          existingPending?.employeeCode === codeClean &&
-          existingPending.shiftId === shiftId &&
-          existingPending.storeId === storeId
-        ) {
-          if (!exitAutoCloseTimerRef.current || exitAutoCloseShiftIdRef.current !== shiftId) {
-            scheduleAutoExitTimer(existingPending);
-          }
-          log(`auto-exit-close already pending for shift=${shiftId}`);
+    const subHeartbeat = BackgroundGeolocation.onHeartbeat(async (event: any) => {
+      const latest = latestBgRef.current;
+      if (!latest.loggedIn) return;
+
+      try {
+        const fresh = await latest.refreshStatus?.({silent: true});
+        if (!fresh?.open_shift) {
+          log('heartbeat skipped: no open shift');
           return;
         }
 
-        if (existingPending) {
-          await clearPendingAutoExit('rescheduled for current open shift');
+        const locationResult = await getFreshPosition();
+        if (!locationResult.location) {
+          log(`heartbeat location failed: ${locationResult.errorMessage || locationResult.errorCode || 'unknown'}`);
+          return;
         }
 
-        const nowMs = Date.now();
-        await savePendingAutoExit({
-          employeeCode: codeClean,
-          shiftId,
-          storeId,
-          storeName: fresh.open_shift.store_name,
-          exitAt: nowMs,
-          deadlineAt: nowMs + EXIT_GRACE_MS,
+        const loc = locationResult.location;
+        await postBgEvent({
+          event: 'heartbeat',
+          timestamp: event?.timestamp || loc.timestamp || Date.now(),
+          lat: loc.coords.latitude,
+          lng: loc.coords.longitude,
+          accuracy_m: loc.coords.accuracy,
+          employee_code: String(latest.employeeCode || '').trim().toLowerCase(),
+          shift_id: fresh.open_shift.shift_id,
+          store_id: fresh.open_shift.store_id,
+          heartbeat: event || {},
+          location: loc as any,
+        }, {
+          device_uuid: deviceUuidRef.current || (loc as any)?.uuid,
+          device_label: deviceLabel(),
         });
+
+        log('heartbeat location posted');
+      } catch (e) {
+        log(`heartbeat post failed: ${String(e)}`);
       }
     });
 
     const subProvider = BackgroundGeolocation.onProviderChange(p => {
       if (latestBgRef.current.showDebug) log(`provider enabled=${p.enabled} status=${p.status}`);
       if (p.enabled) {
-        latestBgRef.current.processPendingAutoExit?.('provider-change').catch(() => null);
       }
     });
 
@@ -1286,6 +1122,8 @@ useEffect(() => {
         const state = await BackgroundGeolocation.ready({
           desiredAccuracy: -1,
           distanceFilter: 25,
+          heartbeatInterval: BG_HEARTBEAT_SECONDS,
+          foregroundService: true,
           stopOnTerminate: false,
           startOnBoot: true,
           disableLocationAuthorizationAlert: true,
@@ -1359,6 +1197,7 @@ useEffect(() => {
     return () => {
       subLocation.remove();
       subGeofence.remove();
+      subHeartbeat.remove();
       subProvider.remove();
     };
 
@@ -1563,7 +1402,7 @@ useEffect(() => {
               </Pressable>
             ) : (
               <Pressable
-                onPress={clockOut}
+                onPress={() => clockOut()}
                 style={[styles.bigBtn, styles.bigBtnWarn, !canClockOut && styles.disabledBtn]}
                 disabled={!canClockOut}>
                 <Text style={styles.bigBtnText}>
