@@ -4,6 +4,9 @@ import logging
 import csv
 import json
 import re
+import threading
+import time
+import hmac
 from io import TextIOWrapper
 from decimal import Decimal, ROUND_HALF_UP
 from datetime import datetime, timedelta, time as dtime
@@ -15,6 +18,7 @@ from flask import (
 from flask_sqlalchemy import SQLAlchemy
 from werkzeug.security import generate_password_hash, check_password_hash
 from sqlalchemy import func, text, select
+from sqlalchemy.exc import IntegrityError
 
 # ✅ XLSX export support
 from openpyxl import Workbook
@@ -90,6 +94,14 @@ app.config["SQLALCHEMY_DATABASE_URI"] = db_url
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
+
+AUTO_EXIT_GRACE_SECONDS = 5 * 60
+AUTO_EXIT_ACCURACY_MAX_M = 120.0
+AUTO_EXIT_OUTSIDE_BUFFER_M = 15.0
+AUTO_EXIT_OUTSIDE_CONFIRM_SECONDS = 60
+AUTO_EXIT_MAX_EVENT_AGE_SECONDS = 15 * 60
+BG_LOCATION_PING_INTERVAL = timedelta(minutes=15)
+AUTO_EXIT_WORKER_INTERVAL_SECONDS = 60
 
 # -----------------------------
 # Flask-Migrate (optional)
@@ -255,6 +267,50 @@ class MobileEvent(db.Model):
     received_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
 
     raw_json = db.Column(db.Text, nullable=False)
+
+class PendingAutoExit(db.Model):
+    __tablename__ = "pending_auto_exits"
+    __table_args__ = (
+        db.Index("ix_pending_auto_exits_shift_status", "shift_id", "status"),
+        db.Index("ix_pending_auto_exits_status_deadline", "status", "deadline_at"),
+        db.Index("ix_pending_auto_exits_employee_status", "employee_id", "status"),
+        db.Index("ix_pending_auto_exits_store_status", "store_id", "status"),
+        db.Index(
+            "ux_pending_auto_exits_open_shift",
+            "shift_id",
+            unique=True,
+            postgresql_where=text("status IN ('active', 'candidate')"),
+            sqlite_where=text("status IN ('active', 'candidate')"),
+        ),
+    )
+    id = db.Column(db.Integer, primary_key=True)
+
+    employee_id = db.Column(db.Integer, db.ForeignKey("employees.id"), nullable=False)
+    shift_id = db.Column(db.Integer, db.ForeignKey("shifts.id"), nullable=False)
+    store_id = db.Column(db.Integer, db.ForeignKey("stores.id"), nullable=False)
+
+    device_uuid = db.Column(db.String(120), nullable=True)
+    status = db.Column(db.String(30), nullable=False, default="active")
+    source = db.Column(db.String(50), nullable=False, default="outside_location")
+
+    exit_at = db.Column(db.DateTime, nullable=False, default=lambda: now_utc())
+    deadline_at = db.Column(db.DateTime, nullable=False)
+    last_seen_at = db.Column(db.DateTime, nullable=True)
+
+    last_lat = db.Column(db.Float, nullable=True)
+    last_lng = db.Column(db.Float, nullable=True)
+    last_accuracy_m = db.Column(db.Float, nullable=True)
+    last_dist_m = db.Column(db.Float, nullable=True)
+
+    outside_count = db.Column(db.Integer, nullable=False, default=1)
+    cancel_reason = db.Column(db.String(120), nullable=True)
+    created_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
+    updated_at = db.Column(db.DateTime, default=lambda: now_utc(), nullable=False)
+    closed_at = db.Column(db.DateTime, nullable=True)
+
+    employee = db.relationship("Employee")
+    shift = db.relationship("Shift")
+    store = db.relationship("Store")
 
 class MobileIssueReport(db.Model):
     __tablename__ = "mobile_issue_reports"
@@ -456,6 +512,36 @@ def shift_clock_out_label(shift: "Shift") -> str:
         "open": "Open",
     }.get(shift_clock_out_source(shift), "Employee Clock-Out")
 
+def shift_clock_out_distance_m(shift: "Shift") -> float | None:
+    if not shift or shift.clock_out_lat is None or shift.clock_out_lng is None or not shift.store:
+        return None
+    try:
+        return float(haversine_m(shift.clock_out_lat, shift.clock_out_lng, shift.store.latitude, shift.store.longitude))
+    except Exception:
+        return None
+
+def shift_clock_out_outside_geofence(shift: "Shift") -> bool:
+    dist = shift_clock_out_distance_m(shift)
+    if dist is None or not shift or not shift.store:
+        return False
+    return dist > shift.store.geofence_radius_m
+
+def active_pending_auto_exit_for_shift(shift: "Shift"):
+    if not shift or shift.clock_out:
+        return None
+    return (
+        PendingAutoExit.query
+        .filter(PendingAutoExit.shift_id == shift.id, PendingAutoExit.status == "active")
+        .order_by(PendingAutoExit.deadline_at.asc())
+        .first()
+    )
+
+def pending_auto_exit_minutes_remaining(pending: "PendingAutoExit") -> int:
+    if not pending or not pending.deadline_at:
+        return 0
+    remaining = (pending.deadline_at - now_utc()).total_seconds()
+    return max(0, int(math.ceil(remaining / 60.0)))
+
 def last_completed_payroll_week(reference: datetime | None = None):
     ref_local = reference or now_local()
     weekday = ref_local.weekday()  # Monday=0
@@ -584,7 +670,7 @@ def _require_mobile_auth():
         app.logger.error("MOBILE_DEVICE_TOKEN is not set on the server.")
         return False, ("server_not_configured", 500)
 
-    if not provided or provided != expected:
+    if not provided or not hmac.compare_digest(provided, expected):
         return False, ("unauthorized", 401)
 
     return True, None
@@ -735,6 +821,14 @@ def _coerce_str(val, max_len: int = 120) -> str | None:
         return None
     return s[:max_len]
 
+def _json_bool_field(data: dict, name: str) -> tuple[bool | None, str | None]:
+    if name not in data:
+        return False, None
+    value = data.get(name)
+    if isinstance(value, bool):
+        return value, None
+    return None, f"{name}_must_be_boolean"
+
 def _touch_employee_device(emp: "Employee", device_uuid: str | None, device_label: str | None):
     """
     Option C behavior: if device_uuid provided, overwrite employee.device_uuid.
@@ -749,6 +843,290 @@ def _touch_employee_device(emp: "Employee", device_uuid: str | None, device_labe
         emp.device_last_seen_at = now_utc()
     except Exception:
         pass
+
+def _auto_exit_clearance_required(accuracy_m: float | None = None) -> float:
+    accuracy_part = 0.0
+    if accuracy_m is not None:
+        try:
+            accuracy_part = max(0.0, min(float(accuracy_m), AUTO_EXIT_ACCURACY_MAX_M))
+        except (TypeError, ValueError):
+            accuracy_part = 0.0
+    return AUTO_EXIT_OUTSIDE_BUFFER_M + accuracy_part
+
+def _is_reliable_outside(store: "Store", dist_m: float, accuracy_m: float | None = None) -> bool:
+    if accuracy_m is not None and accuracy_m > AUTO_EXIT_ACCURACY_MAX_M:
+        return False
+    return dist_m > (store.geofence_radius_m + _auto_exit_clearance_required(accuracy_m))
+
+def _cancel_pending_auto_exit(shift_id: int, reason: str):
+    pending_records = (
+        PendingAutoExit.query
+        .filter(PendingAutoExit.shift_id == shift_id, PendingAutoExit.status.in_(["active", "candidate"]))
+        .order_by(PendingAutoExit.created_at.desc())
+        .all()
+    )
+    if not pending_records:
+        return False
+    now = now_utc()
+    for pending in pending_records:
+        pending.status = "cancelled"
+        pending.cancel_reason = reason[:120]
+        pending.updated_at = now
+    db.session.commit()
+    log_event("AUTO_EXIT_PENDING_CANCELLED", shift_id=shift_id, reason=reason, count=len(pending_records))
+    return True
+
+def _record_auto_exit_observation(
+    emp: "Employee",
+    open_shift: "Shift",
+    store: "Store",
+    lat: float,
+    lng: float,
+    accuracy_m: float | None,
+    device_uuid: str | None,
+    source: str,
+):
+    source = (source or "outside_location").strip().lower()
+    dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
+    if accuracy_m is not None and accuracy_m > AUTO_EXIT_ACCURACY_MAX_M:
+        return None, "accuracy_too_low", dist_m
+
+    if not _is_reliable_outside(store, dist_m, accuracy_m):
+        _cancel_pending_auto_exit(open_shift.id, "inside_or_near_store")
+        return None, "inside_or_near_store", dist_m
+
+    now = now_utc()
+    pending = (
+        PendingAutoExit.query
+        .filter(PendingAutoExit.shift_id == open_shift.id, PendingAutoExit.status.in_(["active", "candidate"]))
+        .with_for_update()
+        .order_by(PendingAutoExit.created_at.desc())
+        .first()
+    )
+
+    starts_immediately = source == "geofence_exit"
+
+    if pending:
+        if pending.employee_id != emp.id or pending.store_id != store.id:
+            return pending, "pending_shift_identity_mismatch", dist_m
+        if pending.device_uuid and device_uuid and pending.device_uuid != device_uuid:
+            return pending, "pending_device_mismatch", dist_m
+        pending.last_seen_at = now
+        pending.last_lat = lat
+        pending.last_lng = lng
+        pending.last_accuracy_m = accuracy_m
+        pending.last_dist_m = float(dist_m)
+        pending.outside_count = (pending.outside_count or 0) + 1
+        pending.device_uuid = device_uuid or pending.device_uuid
+        pending.source = source or pending.source
+        pending.updated_at = now
+        if pending.status == "candidate":
+            age_seconds = (now - (pending.exit_at or pending.created_at or now)).total_seconds()
+            if starts_immediately or age_seconds >= AUTO_EXIT_OUTSIDE_CONFIRM_SECONDS:
+                pending.status = "active"
+                pending.deadline_at = now + timedelta(seconds=AUTO_EXIT_GRACE_SECONDS)
+    else:
+        pending = PendingAutoExit(
+            employee_id=emp.id,
+            shift_id=open_shift.id,
+            store_id=store.id,
+            device_uuid=device_uuid,
+            status="active" if starts_immediately else "candidate",
+            source=source or "outside_location",
+            exit_at=now,
+            deadline_at=now + timedelta(seconds=AUTO_EXIT_GRACE_SECONDS),
+            last_seen_at=now,
+            last_lat=lat,
+            last_lng=lng,
+            last_accuracy_m=accuracy_m,
+            last_dist_m=float(dist_m),
+            outside_count=1,
+        )
+        db.session.add(pending)
+    try:
+        db.session.commit()
+    except IntegrityError:
+        db.session.rollback()
+        pending = (
+            PendingAutoExit.query
+            .filter(PendingAutoExit.shift_id == open_shift.id, PendingAutoExit.status.in_(["active", "candidate"]))
+            .with_for_update()
+            .order_by(PendingAutoExit.created_at.desc())
+            .first()
+        )
+        if not pending:
+            raise
+        pending.last_seen_at = now
+        pending.last_lat = lat
+        pending.last_lng = lng
+        pending.last_accuracy_m = accuracy_m
+        pending.last_dist_m = float(dist_m)
+        pending.outside_count = (pending.outside_count or 0) + 1
+        pending.device_uuid = device_uuid or pending.device_uuid
+        pending.updated_at = now
+        if pending.status == "candidate":
+            age_seconds = (now - (pending.exit_at or pending.created_at or now)).total_seconds()
+            if starts_immediately or age_seconds >= AUTO_EXIT_OUTSIDE_CONFIRM_SECONDS:
+                pending.status = "active"
+                pending.deadline_at = now + timedelta(seconds=AUTO_EXIT_GRACE_SECONDS)
+        db.session.commit()
+    log_event(
+        "AUTO_EXIT_PENDING_UPSERT",
+        employee_id=emp.id,
+        shift_id=open_shift.id,
+        store_id=store.id,
+        source=source,
+        status=pending.status,
+        outside_count=pending.outside_count,
+        dist_m=round(dist_m, 1),
+        accuracy_m=accuracy_m if accuracy_m is not None else "",
+        deadline_at=pending.deadline_at.isoformat(),
+    )
+    if pending.status != "active":
+        return pending, "outside_candidate_waiting_for_confirmation", dist_m
+    return pending, None, dist_m
+
+def _close_shift_auto_exit_from_pending(pending: "PendingAutoExit"):
+    pending = (
+        PendingAutoExit.query
+        .filter(PendingAutoExit.id == pending.id)
+        .with_for_update()
+        .first()
+    )
+    if not pending or pending.status != "active" or not pending.deadline_at or pending.deadline_at > now_utc():
+        return False, "pending_not_expired"
+
+    open_shift = (
+        Shift.query
+        .filter(Shift.id == pending.shift_id, Shift.clock_out.is_(None))
+        .with_for_update()
+        .first()
+    )
+    if not open_shift or open_shift.clock_out is not None:
+        pending.status = "cancelled"
+        pending.cancel_reason = "shift_already_closed"
+        pending.updated_at = now_utc()
+        db.session.commit()
+        return False, "shift_already_closed"
+
+    store = Store.query.get(open_shift.store_id)
+    emp = Employee.query.get(open_shift.employee_id)
+    if not store or not emp or open_shift.store_id != pending.store_id:
+        pending.status = "cancelled"
+        pending.cancel_reason = "shift_store_or_employee_missing"
+        pending.updated_at = now_utc()
+        db.session.commit()
+        return False, "shift_store_or_employee_missing"
+
+    if pending.last_lat is None or pending.last_lng is None:
+        return False, "missing_location"
+
+    accuracy_m = pending.last_accuracy_m
+    dist_m = haversine_m(pending.last_lat, pending.last_lng, store.latitude, store.longitude)
+    if not _is_reliable_outside(store, dist_m, accuracy_m):
+        pending.status = "cancelled"
+        pending.cancel_reason = "inside_or_near_store_at_deadline"
+        pending.updated_at = now_utc()
+        db.session.commit()
+        return False, "inside_or_near_store_at_deadline"
+
+    old_in = open_shift.clock_in
+    old_out = open_shift.clock_out
+    now = now_utc()
+    close_time = pending.deadline_at
+
+    open_shift.clock_out = close_time
+    open_shift.clock_out_lat = pending.last_lat
+    open_shift.clock_out_lng = pending.last_lng
+    open_shift.clock_out_device_uuid = pending.device_uuid
+    open_shift.clock_out_source = "auto_exit"
+    open_shift.closed_by_admin = False
+    open_shift.admin_closed_by = "AUTO_EXIT"
+    open_shift.admin_closed_at = now
+    open_shift.admin_close_reason = (
+        f"Auto Exit after {AUTO_EXIT_GRACE_SECONDS // 60} minute grace; "
+        f"clock_out_at=deadline processed_at={now.isoformat()}; "
+        f"dist={round(dist_m, 1)}m radius={store.geofence_radius_m}m "
+        f"accuracy={round(accuracy_m, 1) if accuracy_m is not None else 'unknown'}m"
+    )
+
+    audit = ShiftEditAudit(
+        shift_id=open_shift.id,
+        action="auto_exit_close",
+        editor="AUTO_EXIT",
+        reason=open_shift.admin_close_reason,
+        old_clock_in=old_in,
+        old_clock_out=old_out,
+        new_clock_in=open_shift.clock_in,
+        new_clock_out=open_shift.clock_out,
+    )
+    pending.status = "closed"
+    pending.closed_at = now
+    pending.updated_at = now
+    db.session.add(audit)
+    db.session.commit()
+    log_event(
+        "AUTO_EXIT_PENDING_CLOSED",
+        employee_id=emp.id,
+        shift_id=open_shift.id,
+        store_id=store.id,
+        dist_m=round(dist_m, 1),
+        accuracy_m=accuracy_m if accuracy_m is not None else "",
+    )
+    return True, "closed"
+
+def process_expired_pending_auto_exits(limit: int = 50):
+    now = now_utc()
+    expired = (
+        PendingAutoExit.query
+        .filter(PendingAutoExit.status == "active", PendingAutoExit.deadline_at <= now)
+        .with_for_update(skip_locked=True)
+        .order_by(PendingAutoExit.deadline_at.asc())
+        .limit(limit)
+        .all()
+    )
+    results = []
+    for pending in expired:
+        try:
+            results.append((pending.id, *_close_shift_auto_exit_from_pending(pending)))
+        except Exception as exc:
+            db.session.rollback()
+            app.logger.exception("AUTO_EXIT_PENDING_PROCESS_FAILED id=%s error=%s", pending.id, exc)
+            results.append((pending.id, False, "error"))
+    return results
+
+def process_expired_pending_auto_exits_best_effort(context: str = ""):
+    try:
+        return process_expired_pending_auto_exits()
+    except Exception:
+        app.logger.exception("AUTO_EXIT_PENDING_OPPORTUNISTIC_PROCESS_FAILED context=%s", context)
+        return []
+
+_auto_exit_worker_started = False
+
+def start_auto_exit_worker():
+    # Best-effort only: Render/Gunicorn may run multiple processes or restart.
+    # Correctness comes from database-backed pending exits plus opportunistic
+    # processing and the protected maintenance endpoint for external scheduling.
+    global _auto_exit_worker_started
+    if _auto_exit_worker_started:
+        return
+    if (os.environ.get("AUTO_EXIT_WORKER_ENABLED") or "0").strip().lower() not in {"1", "true", "yes"}:
+        return
+    _auto_exit_worker_started = True
+
+    def _worker():
+        while True:
+            time.sleep(AUTO_EXIT_WORKER_INTERVAL_SECONDS)
+            try:
+                with app.app_context():
+                    process_expired_pending_auto_exits()
+            except Exception:
+                app.logger.exception("AUTO_EXIT_WORKER_ERROR")
+
+    t = threading.Thread(target=_worker, name="clockin-auto-exit-worker", daemon=True)
+    t.start()
+    app.logger.info("Auto-exit worker started interval=%ss", AUTO_EXIT_WORKER_INTERVAL_SECONDS)
 
 def _device_has_other_open_shift(device_uuid: str, employee_id: int) -> "Shift | None":
     """
@@ -779,6 +1157,10 @@ def inject_helpers():
         minutes_to_decimal_hours=minutes_to_decimal_hours,
         shift_clock_out_source=shift_clock_out_source,
         shift_clock_out_label=shift_clock_out_label,
+        shift_clock_out_distance_m=shift_clock_out_distance_m,
+        shift_clock_out_outside_geofence=shift_clock_out_outside_geofence,
+        active_pending_auto_exit_for_shift=active_pending_auto_exit_for_shift,
+        pending_auto_exit_minutes_remaining=pending_auto_exit_minutes_remaining,
         suggest_employee_username=suggest_employee_username
     )
 
@@ -850,6 +1232,38 @@ def _ensure_unique_employee_code_index():
         db.session.rollback()
         app.logger.exception("Could not ensure unique employee username/code index")
 
+def _ensure_pending_auto_exit_indexes():
+    try:
+        statements = [
+            """
+            CREATE INDEX IF NOT EXISTS ix_pending_auto_exits_shift_status
+            ON pending_auto_exits (shift_id, status)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_pending_auto_exits_status_deadline
+            ON pending_auto_exits (status, deadline_at)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_pending_auto_exits_employee_status
+            ON pending_auto_exits (employee_id, status)
+            """,
+            """
+            CREATE INDEX IF NOT EXISTS ix_pending_auto_exits_store_status
+            ON pending_auto_exits (store_id, status)
+            """,
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS ux_pending_auto_exits_open_shift
+            ON pending_auto_exits (shift_id)
+            WHERE status IN ('active', 'candidate')
+            """,
+        ]
+        for sql in statements:
+            db.session.execute(text(sql))
+        db.session.commit()
+    except Exception:
+        db.session.rollback()
+        app.logger.exception("Could not ensure pending auto-exit indexes")
+
 # -----------------------------
 # Create tables on startup (Option B)
 # -----------------------------
@@ -870,6 +1284,8 @@ with app.app_context():
     _ensure_column("shifts", "clock_in_device_uuid", "VARCHAR(120)")
     _ensure_column("shifts", "clock_out_device_uuid", "VARCHAR(120)")
     _ensure_column("shifts", "clock_out_source", "VARCHAR(32)")
+    _ensure_pending_auto_exit_indexes()
+    start_auto_exit_worker()
 
 # -----------------------------
 # Fingerprint (DEBUG)
@@ -1140,6 +1556,7 @@ def api_mobile_me():
     if not ok:
         msg, code = err
         return jsonify({"ok": False, "error": msg}), code
+    process_expired_pending_auto_exits_best_effort("mobile_me")
 
     data = request.get_json(silent=True) or {}
     username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
@@ -1173,6 +1590,7 @@ def api_mobile_status():
     if not ok:
         msg, code = err
         return jsonify({"ok": False, "error": msg}), code
+    process_expired_pending_auto_exits_best_effort("mobile_status")
 
     data = request.get_json(silent=True) or {}
     username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
@@ -1223,6 +1641,7 @@ def api_mobile_clock_in():
     if not ok:
         msg, code = err
         return jsonify({"ok": False, "error": msg}), code
+    process_expired_pending_auto_exits_best_effort("mobile_clock_in")
 
     data = request.get_json(silent=True) or {}
 
@@ -1274,7 +1693,7 @@ def api_mobile_clock_in():
         if other:
             return jsonify({"ok": False, "error": "device_in_use"}), 409
 
-    if accuracy_m is not None and accuracy_m > 120:
+    if accuracy_m is not None and accuracy_m > AUTO_EXIT_ACCURACY_MAX_M:
         return jsonify({
             "ok": False,
             "error": "accuracy_too_low",
@@ -1330,6 +1749,7 @@ def api_mobile_clock_out():
     if not ok:
         msg, code = err
         return jsonify({"ok": False, "error": msg}), code
+    process_expired_pending_auto_exits_best_effort("mobile_clock_out")
 
     data = request.get_json(silent=True) or {}
 
@@ -1340,6 +1760,9 @@ def api_mobile_clock_out():
     accuracy_m = data.get("accuracy_m")
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
+    allow_outside_geofence, bool_error = _json_bool_field(data, "allow_outside_geofence")
+    if bool_error:
+        return jsonify({"ok": False, "error": bool_error}), 400
 
     if not pin or lat is None or lon is None:
         return jsonify({"ok": False, "error": "missing_required_fields"}), 400
@@ -1366,22 +1789,61 @@ def api_mobile_clock_out():
     if not open_shift:
         return jsonify({"ok": False, "error": "no_open_shift"}), 409
 
+    if accuracy_m is not None and accuracy_m > AUTO_EXIT_ACCURACY_MAX_M:
+        return jsonify({
+            "ok": False,
+            "error": "accuracy_too_low",
+            "message": "GPS accuracy is too low. Step outside and try again.",
+            "accuracy_m": accuracy_m,
+        }), 403
+
     store = Store.query.get(open_shift.store_id)
+    if not store:
+        return jsonify({"ok": False, "error": "store_not_found"}), 500
 
-    result = find_store_for_location(lat, lon, accuracy_m)
-    if not result.get("ok"):
-        return jsonify({"ok": False, "error": "location_invalid", **result}), 403
-
-    if store and result.get("store").id != store.id:
-        return jsonify({"ok": False, "error": "wrong_store_location"}), 403
+    dist_m = haversine_m(lat, lon, store.latitude, store.longitude)
+    outside_geofence = dist_m > store.geofence_radius_m
+    if outside_geofence and not allow_outside_geofence:
+        return jsonify({
+            "ok": False,
+            "error": "outside_store_geofence",
+            "requires_confirmation": True,
+            "message": "You appear to be outside the store location. Clock out anyway?",
+            "dist_m": round(dist_m, 1),
+            "radius_m": float(store.geofence_radius_m),
+            "accuracy_m": accuracy_m,
+        }), 409
 
     _touch_employee_device(emp, device_uuid, device_label)
+
+    old_in = open_shift.clock_in
+    old_out = open_shift.clock_out
 
     open_shift.clock_out = now_utc()
     open_shift.clock_out_lat = lat
     open_shift.clock_out_lng = lon
     open_shift.clock_out_device_uuid = device_uuid
     open_shift.clock_out_source = "employee"
+
+    if outside_geofence:
+        audit = ShiftEditAudit(
+            shift_id=open_shift.id,
+            action="employee_clock_out_outside",
+            editor="MOBILE",
+            reason=(
+                f"outside_geofence=true confirmation=true source=mobile "
+                f"lat={lat} lon={lon} dist_m={round(dist_m, 1)} "
+                f"radius_m={store.geofence_radius_m} "
+                f"accuracy_m={round(accuracy_m, 1) if accuracy_m is not None else 'unknown'}"
+            ),
+            old_clock_in=old_in,
+            old_clock_out=old_out,
+            new_clock_in=open_shift.clock_in,
+            new_clock_out=open_shift.clock_out,
+        )
+        db.session.add(audit)
+
+    _cancel_pending_auto_exit(open_shift.id, "manual_clock_out")
 
     db.session.commit()
 
@@ -1391,6 +1853,9 @@ def api_mobile_clock_out():
         "ok": True,
         "shift_id": open_shift.id,
         "clock_out_utc": open_shift.clock_out.isoformat() + "Z",
+        "outside_geofence": outside_geofence,
+        "dist_m": round(dist_m, 1),
+        "radius_m": float(store.geofence_radius_m),
         "minutes": minutes,
         "human": minutes_to_human(minutes)
     })
@@ -1473,7 +1938,7 @@ def api_mobile_auto_exit_close():
 
     # Accuracy gate (prevent bad GPS closing someone incorrectly)
     # Match your validate-location gate style
-    if accuracy_m is not None and accuracy_m > 120:
+    if accuracy_m is not None and accuracy_m > AUTO_EXIT_ACCURACY_MAX_M:
         return jsonify({
             "ok": False,
             "error": "accuracy_too_low",
@@ -1482,8 +1947,8 @@ def api_mobile_auto_exit_close():
         }), 409
 
     # Only allow auto-close if OUTSIDE radius (with a little buffer)
-    buffer_m = 15.0
-    if dist_m <= (store.geofence_radius_m + buffer_m):
+    buffer_m = AUTO_EXIT_OUTSIDE_BUFFER_M
+    if not _is_reliable_outside(store, dist_m, accuracy_m):
         return jsonify({
             "ok": False,
             "error": "still_inside_or_near_store",
@@ -1492,39 +1957,23 @@ def api_mobile_auto_exit_close():
             "buffer_m": buffer_m
         }), 409
 
-    # Touch employee device last-seen
     _touch_employee_device(emp, device_uuid, device_label)
 
-    # Close the employee's current open shift after confirmed geofence exit.
-    old_in = open_shift.clock_in
-    old_out = open_shift.clock_out
-
-    open_shift.clock_out = now_utc()
-    open_shift.clock_out_lat = lat
-    open_shift.clock_out_lng = lon
-    open_shift.clock_out_device_uuid = device_uuid
-    open_shift.clock_out_source = "auto_exit"
-
-    open_shift.closed_by_admin = False
-    open_shift.admin_closed_by = "AUTO_EXIT"
-    open_shift.admin_closed_at = now_utc()
-    open_shift.admin_close_reason = reason
-
-    audit = ShiftEditAudit(
-        shift_id=open_shift.id,
-        action="auto_exit_close",
-        editor="AUTO_EXIT",
-        reason=reason,
-        old_clock_in=old_in,
-        old_clock_out=old_out,
-        new_clock_in=open_shift.clock_in,
-        new_clock_out=open_shift.clock_out
+    pending, pending_error, _ = _record_auto_exit_observation(
+        emp,
+        open_shift,
+        store,
+        lat,
+        lon,
+        accuracy_m,
+        device_uuid,
+        "legacy_auto_exit_close",
     )
-    db.session.add(audit)
-    db.session.commit()
+    results = process_expired_pending_auto_exits()
+    closed = any(ok and result == "closed" for _, ok, result in results)
 
     log_event(
-        "AUTO_EXIT_CLOSE_OK",
+        "AUTO_EXIT_LEGACY_OBSERVATION",
         employee_id=emp.id,
         shift_id=open_shift.id,
         store_id=store.id,
@@ -1532,19 +1981,19 @@ def api_mobile_auto_exit_close():
         radius_m=store.geofence_radius_m,
         accuracy_m=accuracy_m if accuracy_m is not None else "",
         device_uuid=device_uuid or "",
+        pending_status=getattr(pending, "status", "") if pending else "",
+        pending_error=pending_error or "",
+        closed=closed,
     )
-
-    mins = shift_minutes(open_shift)
 
     return jsonify({
         "ok": True,
         "shift_id": open_shift.id,
         "store_name": store.name,
         "dist_m": round(dist_m, 1),
-        "minutes": mins,
-        "human": minutes_to_human(mins),
-        "clock_out_utc": open_shift.clock_out.isoformat() + "Z",
-        "message": "Shift auto-closed after EXIT."
+        "pending_status": getattr(pending, "status", None),
+        "closed": closed,
+        "message": "Auto-exit observation received."
     }), 200
 
 @app.post("/api/mobile/geofences")
@@ -1659,21 +2108,73 @@ def api_mobile_bg_event():
         else:
             geofence_action = ""
             if isinstance(payload.get("geofence"), dict):
-                geofence_action = str((payload.get("geofence") or {}).get("action") or "").strip().upper()
+                geofence_action = str(
+                    payload.get("geofence_action")
+                    or (payload.get("geofence") or {}).get("action")
+                    or ""
+                ).strip().upper()
+            elif payload.get("geofence_action"):
+                geofence_action = str(payload.get("geofence_action") or "").strip().upper()
+
             important_geofence = event_type == "geofence" and geofence_action in {"ENTER", "EXIT"}
-            min_interval = timedelta(seconds=60) if important_geofence else timedelta(minutes=15)
-            cutoff = now_utc() - min_interval
-            recent_ping = (
-                LocationPing.query
-                .filter(LocationPing.shift_id == open_shift.id, LocationPing.created_at >= cutoff)
-                .order_by(LocationPing.created_at.desc())
-                .first()
+            min_interval = BG_LOCATION_PING_INTERVAL
+            dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
+            inside_radius = bool(dist_m <= store.geofence_radius_m)
+            event_is_stale = bool(
+                event_at and (now_utc() - event_at).total_seconds() > AUTO_EXIT_MAX_EVENT_AGE_SECONDS
             )
+
+            if geofence_action == "ENTER" or inside_radius:
+                _cancel_pending_auto_exit(open_shift.id, "geofence_enter" if geofence_action == "ENTER" else "inside_location")
+            elif event_is_stale:
+                log_event(
+                    "AUTO_EXIT_PENDING_SKIPPED",
+                    employee_id=emp.id,
+                    shift_id=open_shift.id,
+                    store_id=store.id,
+                    reason="stale_event",
+                    event_type=event_type,
+                    geofence_action=geofence_action,
+                    dist_m=round(dist_m, 1),
+                    event_at=event_at.isoformat(),
+                )
+            elif important_geofence or event_type in {"location", "heartbeat", "motionchange"}:
+                pending, pending_error, _ = _record_auto_exit_observation(
+                    emp,
+                    open_shift,
+                    store,
+                    lat,
+                    lng,
+                    accuracy,
+                    device_uuid,
+                    "geofence_exit" if geofence_action == "EXIT" else event_type,
+                )
+                if pending_error:
+                    log_event(
+                        "AUTO_EXIT_PENDING_SKIPPED",
+                        employee_id=emp.id,
+                        shift_id=open_shift.id,
+                        store_id=store.id,
+                        reason=pending_error,
+                        event_type=event_type,
+                        geofence_action=geofence_action,
+                        dist_m=round(dist_m, 1),
+                        accuracy_m=accuracy if accuracy is not None else "",
+                    )
+
+            cutoff = now_utc() - min_interval
+            recent_ping = None
+            if not important_geofence:
+                recent_ping = (
+                    LocationPing.query
+                    .filter(LocationPing.shift_id == open_shift.id, LocationPing.created_at >= cutoff)
+                    .order_by(LocationPing.created_at.desc())
+                    .first()
+                )
 
             if recent_ping:
                 ping_skipped = "rate_limited"
             else:
-                dist_m = haversine_m(lat, lng, store.latitude, store.longitude)
                 ping = LocationPing(
                     employee_id=emp.id,
                     shift_id=open_shift.id,
@@ -1681,7 +2182,7 @@ def api_mobile_bg_event():
                     lat=lat,
                     lng=lng,
                     dist_m=float(dist_m),
-                    inside_radius=bool(dist_m <= store.geofence_radius_m),
+                    inside_radius=inside_radius,
                     created_at=now_utc(),
                 )
                 db.session.add(ping)
@@ -1698,6 +2199,8 @@ def api_mobile_bg_event():
                     inside=ping.inside_radius,
                     device_uuid=device_uuid or "",
                 )
+
+            process_expired_pending_auto_exits_best_effort("mobile_bg_event")
     except Exception:
         db.session.rollback()
         ping_skipped = "ping_processing_error"
@@ -1709,6 +2212,29 @@ def api_mobile_bg_event():
         "ping_created": ping_created,
         "ping_id": ping_id,
         "ping_skipped": ping_skipped,
+    })
+
+@app.post("/api/maintenance/auto-exit/process")
+def api_maintenance_auto_exit_process():
+    expected = (os.environ.get("AUTO_EXIT_MAINTENANCE_TOKEN") or "").strip()
+    provided = (request.headers.get("X-Auto-Exit-Token") or "").strip()
+    auth = (request.headers.get("Authorization") or "").strip()
+    if not provided and auth.lower().startswith("bearer "):
+        provided = auth[7:].strip()
+
+    if not expected:
+        return jsonify({"ok": False, "error": "maintenance_not_configured"}), 503
+    if not provided or not hmac.compare_digest(provided, expected):
+        return jsonify({"ok": False, "error": "unauthorized"}), 401
+
+    results = process_expired_pending_auto_exits()
+    closed = sum(1 for _, ok, reason in results if ok and reason == "closed")
+    skipped = len(results) - closed
+    return jsonify({
+        "ok": True,
+        "processed": len(results),
+        "closed": closed,
+        "skipped": skipped,
     })
 
 @app.post("/api/mobile/report-issue")
@@ -1905,6 +2431,7 @@ def employee_page():
 # -----------------------------
 @app.post("/api/clockin")
 def api_clockin():
+    process_expired_pending_auto_exits_best_effort("web_clockin")
     data = request.get_json(force=True, silent=True) or {}
 
     username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
@@ -1913,6 +2440,9 @@ def api_clockin():
     lat = data.get("lat")
     lng = data.get("lng")
     accuracy_m = data.get("accuracy_m")
+    allow_outside_geofence, bool_error = _json_bool_field(data, "allow_outside_geofence")
+    if bool_error:
+        return jsonify({"ok": False, "error": bool_error}), 400
 
     device_uuid = _coerce_str(data.get("device_uuid") or data.get("uuid"))
     device_label = _coerce_str(data.get("device_label"))
@@ -1959,7 +2489,7 @@ def api_clockin():
         log_event("CLOCKIN_DENY_BAD_LATLNG", employee_id=emp.id, store_id=store.id)
         return jsonify({"error": "Invalid lat/lng."}), 400
 
-    if accuracy_m is not None and accuracy_m > 120:
+    if accuracy_m is not None and accuracy_m > AUTO_EXIT_ACCURACY_MAX_M:
         log_event(
             "CLOCKIN_DENY_ACCURACY_TOO_LOW",
             employee_id=emp.id,
@@ -2026,6 +2556,7 @@ def api_clockin():
 
 @app.post("/api/clockout")
 def api_clockout():
+    process_expired_pending_auto_exits_best_effort("web_clockout")
     data = request.get_json(force=True, silent=True) or {}
     username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
@@ -2061,7 +2592,7 @@ def api_clockout():
         log_event("CLOCKOUT_DENY_BAD_LATLNG", employee_id=emp.id, shift_id=open_shift.id)
         return jsonify({"error": "Invalid lat/lng."}), 400
 
-    if accuracy_m is not None and accuracy_m > 120:
+    if accuracy_m is not None and accuracy_m > AUTO_EXIT_ACCURACY_MAX_M:
         log_event(
             "CLOCKOUT_DENY_ACCURACY_TOO_LOW",
             employee_id=emp.id,
@@ -2090,9 +2621,10 @@ def api_clockout():
         device_uuid=device_uuid or ""
     )
 
-    if dist_m > store.geofence_radius_m:
+    outside_geofence = dist_m > store.geofence_radius_m
+    if outside_geofence and not allow_outside_geofence:
         log_event(
-            "CLOCKOUT_DENY_OUTSIDE_RADIUS",
+            "CLOCKOUT_CONFIRM_OUTSIDE_RADIUS",
             employee_id=emp.id,
             shift_id=open_shift.id,
             store_id=store.id,
@@ -2100,15 +2632,45 @@ def api_clockout():
             radius_m=store.geofence_radius_m,
             device_uuid=device_uuid or ""
         )
-        return jsonify({"error": "You are not at the store location."}), 403
+        return jsonify({
+            "error": "outside_store_geofence",
+            "message": "You appear to be outside the store location. Clock out anyway?",
+            "requires_confirmation": True,
+            "dist_m": round(dist_m, 1),
+            "radius_m": float(store.geofence_radius_m),
+            "accuracy_m": accuracy_m,
+        }), 409
 
     _touch_employee_device(emp, device_uuid, device_label)
+
+    old_in = open_shift.clock_in
+    old_out = open_shift.clock_out
 
     open_shift.clock_out = now_utc()
     open_shift.clock_out_lat = lat
     open_shift.clock_out_lng = lng
     open_shift.clock_out_device_uuid = device_uuid
     open_shift.clock_out_source = "employee"
+
+    if outside_geofence:
+        audit = ShiftEditAudit(
+            shift_id=open_shift.id,
+            action="employee_clock_out_outside",
+            editor="WEB",
+            reason=(
+                f"outside_geofence=true confirmation=true source=web "
+                f"lat={lat} lng={lng} dist_m={round(dist_m, 1)} "
+                f"radius_m={store.geofence_radius_m} "
+                f"accuracy_m={round(accuracy_m, 1) if accuracy_m is not None else 'unknown'}"
+            ),
+            old_clock_in=old_in,
+            old_clock_out=old_out,
+            new_clock_in=open_shift.clock_in,
+            new_clock_out=open_shift.clock_out,
+        )
+        db.session.add(audit)
+
+    _cancel_pending_auto_exit(open_shift.id, "manual_clock_out")
     db.session.commit()
 
     mins = shift_minutes(open_shift)
@@ -2120,12 +2682,16 @@ def api_clockout():
         "message": f"Clock-out successful for {emp.name}.",
         "shift_id": open_shift.id,
         "clock_out": fmt_dt(open_shift.clock_out),
+        "outside_geofence": outside_geofence,
+        "dist_m": round(dist_m, 1),
+        "radius_m": float(store.geofence_radius_m),
         "minutes": mins,
         "human": minutes_to_human(mins),
     })
 
 @app.post("/api/clock-status")
 def api_clock_status():
+    process_expired_pending_auto_exits_best_effort("web_clock_status")
     data = request.get_json(force=True, silent=True) or {}
     username_code = normalize_employee_code(data.get("username_code") or data.get("employee_code") or "")
     pin = (data.get("pin") or "").strip()
@@ -2266,6 +2832,7 @@ def admin_dashboard():
     guard = admin_guard()
     if guard:
         return guard
+    process_expired_pending_auto_exits_best_effort("admin_dashboard")
 
     total_employees = Employee.query.count()
     active_employees = Employee.query.filter_by(active=True).count()
@@ -2490,6 +3057,7 @@ def admin_issue_toggle(issue_id: int):
 def admin_pings():
     guard = admin_guard()
     if guard: return guard
+    process_expired_pending_auto_exits_best_effort("admin_pings")
 
     start_str = (request.args.get("start") or "").strip()
     end_str = (request.args.get("end") or "").strip()
@@ -3140,13 +3708,26 @@ def admin_stores_delete():
 def admin_shifts():
     guard = admin_guard()
     if guard: return guard
+    process_expired_pending_auto_exits_best_effort("admin_shifts")
 
     shifts = Shift.query.order_by(
         Shift.clock_out.is_(None).desc(),
         Shift.clock_in.desc()
     ).limit(300).all()
+    shift_ids = [s.id for s in shifts]
+    pending_rows = []
+    if shift_ids:
+        pending_rows = (
+            PendingAutoExit.query
+            .filter(PendingAutoExit.shift_id.in_(shift_ids), PendingAutoExit.status == "active")
+            .order_by(PendingAutoExit.deadline_at.asc())
+            .all()
+        )
+    pending_exits_by_shift = {}
+    for pending in pending_rows:
+        pending_exits_by_shift.setdefault(pending.shift_id, pending)
 
-    return render_template("shifts.html", shifts=shifts)
+    return render_template("shifts.html", shifts=shifts, pending_exits_by_shift=pending_exits_by_shift)
 
 @app.post("/admin/shifts/close")
 def admin_close_shift():
@@ -3382,6 +3963,7 @@ def admin_audit():
 def admin_payroll():
     guard = admin_guard()
     if guard: return guard
+    process_expired_pending_auto_exits_best_effort("admin_payroll")
 
     start_str = request.args.get("start")
     end_str = request.args.get("end")

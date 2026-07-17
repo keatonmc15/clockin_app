@@ -611,7 +611,7 @@
     setStatus(data.message || "Clock-in successful.", "success");
   }
 
-  async function clockOut() {
+  async function clockOut(allowOutsideGeofence = false) {
     if (BUSY) return;
     const username_code = normalizeCode(elCode().value);
     const pin = String(elPin().value || "").trim();
@@ -640,7 +640,8 @@
         pin,
         lat: loc.lat,
         lng: loc.lon,
-        accuracy_m: loc.accuracy_m
+        accuracy_m: loc.accuracy_m,
+        allow_outside_geofence: allowOutsideGeofence
       })
     });
 
@@ -650,6 +651,14 @@
     if (!res.ok) {
       if (String(data.error || "").toLowerCase().includes("no open shift")) {
         setOpenShift(null);
+      }
+      if (res.status === 409 && data.error === "outside_store_geofence" && data.requires_confirmation) {
+        BUSY = false;
+        updateUI();
+        if (window.confirm("You appear to be outside the store location. Clock out anyway?")) {
+          return clockOut(true);
+        }
+        return setStatus("Clock-out cancelled.", "warning");
       }
       updateUI();
       return setStatus(data.error || "Clock-out failed.", "danger");

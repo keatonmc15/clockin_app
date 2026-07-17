@@ -76,6 +76,21 @@
                 <span style="color:#6b7280; font-weight:700;">Closed</span>
               {% else %}
                 <span style="color:#16a34a; font-weight:700;">Open</span>
+                {% set pending_exit = pending_exits_by_shift.get(s.id) if pending_exits_by_shift is defined else none %}
+                {% if pending_exit %}
+                  <div style="margin-top:5px; color:#92400e; font-size:12px; line-height:1.35;">
+                    <strong>Pending Auto Exit</strong><br>
+                    deadline {{ fmt_dt(pending_exit.deadline_at) }}
+                    ({{ pending_auto_exit_minutes_remaining(pending_exit) }} min)<br>
+                    exit {{ fmt_dt(pending_exit.exit_at) }}
+                    {% if pending_exit.last_dist_m is not none %}
+                      · {{ "%.1f"|format(pending_exit.last_dist_m) }}m
+                    {% endif %}
+                    {% if pending_exit.last_accuracy_m is not none %}
+                      · acc {{ "%.0f"|format(pending_exit.last_accuracy_m) }}m
+                    {% endif %}
+                  </div>
+                {% endif %}
               {% endif %}
             </td>
             <td>{{ s.employee.name }}</td>

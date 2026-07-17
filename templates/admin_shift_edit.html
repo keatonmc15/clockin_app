@@ -14,6 +14,10 @@
       <div><strong>Clock Out:</strong> {{ fmt_dt(s.clock_out) or "—" }}</div>
       {% if s.clock_out %}
         <div><strong>Closed By:</strong> <span class="badge bg-secondary">{{ shift_clock_out_label(s) }}</span></div>
+        {% set clock_out_dist = shift_clock_out_distance_m(s) %}
+        {% if clock_out_dist is not none %}
+          <div><strong>Clock-Out Distance:</strong> {{ "%.1f"|format(clock_out_dist) }}m from store{% if shift_clock_out_outside_geofence(s) %} <span class="badge bg-warning text-dark">Outside geofence</span>{% endif %}</div>
+        {% endif %}
         <div><strong>Worked:</strong> {{ minutes_to_human(shift_minutes(s)) }}</div>
       {% endif %}
     </div>
