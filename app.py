@@ -22,7 +22,10 @@ from sqlalchemy.exc import IntegrityError
 
 # ✅ XLSX export support
 from openpyxl import Workbook
-from openpyxl.styles import Font, Alignment
+from openpyxl.drawing.image import Image as XLImage
+from openpyxl.drawing.spreadsheet_drawing import AnchorMarker, OneCellAnchor, XDRPositiveSize2D
+from openpyxl.styles import Font, Alignment, Border, PatternFill, Side
+from openpyxl.utils.units import pixels_to_EMU
 from openpyxl.utils import get_column_letter
 
 # -----------------------------
@@ -4092,56 +4095,298 @@ def admin_payroll():
         from io import BytesIO
 
         wb = Workbook()
-        header_font = Font(bold=True)
-        wrap = Alignment(wrap_text=True, vertical="top")
+        logo_path = os.path.join(app.root_path, "static", "img", "company-logo.png")
+        thin_gray = Side(style="thin", color="D5DCE5")
+        medium_gray = Side(style="medium", color="AAB4C3")
+        border = Border(left=thin_gray, right=thin_gray, top=thin_gray, bottom=thin_gray)
+        total_border = Border(left=thin_gray, right=thin_gray, top=medium_gray, bottom=medium_gray)
+        title_font = Font(bold=True, size=18, color="1F2A44")
+        subtitle_font = Font(bold=True, size=11, color="334155")
+        header_font = Font(bold=True, color="1F2937")
+        small_header_font = Font(bold=True, size=10, color="475569")
+        total_font = Font(bold=True, color="1F2937")
+        normal_font = Font(size=10, color="111827")
+        warning_font = Font(bold=True, color="7F1D1D")
+        wrap_top = Alignment(wrap_text=True, vertical="top")
+        wrap_center = Alignment(wrap_text=True, vertical="center")
+        center = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        left_center = Alignment(horizontal="left", vertical="center", wrap_text=True)
+        total_fill = PatternFill("solid", fgColor="E8F0FE")
+        header_fill = PatternFill("solid", fgColor="F1F5F9")
+        alt_fill = PatternFill("solid", fgColor="F8FAFC")
+        warning_fill = PatternFill("solid", fgColor="FDE2E1")
+        grand_fill = PatternFill("solid", fgColor="E2E8F0")
+
+        def _name_parts(name: str) -> tuple[str, str, str]:
+            clean = " ".join(str(name or "").split())
+            if not clean:
+                return "", "", ""
+            parts = clean.split(" ")
+            if len(parts) == 1:
+                return parts[0], "", parts[0].lower()
+            suffixes = {"jr", "jr.", "sr", "sr.", "ii", "iii", "iv", "v"}
+            suffix = parts[-1] if parts[-1].lower().rstrip(".") in suffixes else ""
+            core = parts[:-1] if suffix else parts
+            surname_particles = {"da", "de", "del", "della", "der", "di", "du", "la", "le", "van", "von"}
+            last_start = max(len(core) - 1, 0)
+            while last_start > 0 and core[last_start - 1].lower() in surname_particles:
+                last_start -= 1
+            first = " ".join(core[:last_start]) if last_start > 0 else core[0]
+            last = " ".join(core[last_start:]) if last_start > 0 else ""
+            if suffix and last:
+                last = f"{last} {suffix}"
+            display = f"{last}, {first}" if last else clean
+            if suffix:
+                display = display if last else clean
+            sort_last = (last or clean).lower()
+            return display, first.lower(), sort_last
+
+        def _format_time(dt: datetime | None) -> str:
+            if not dt:
+                return "Missing"
+            local_dt = utc_naive_to_local(dt)
+            return local_dt.strftime("%I:%M %p").lstrip("0")
+
+        def _format_report_date(dt: datetime) -> str:
+            return dt.strftime("%B %d, %Y").replace(" 0", " ")
+
+        def _shift_hours_text(minutes: int) -> str:
+            return f"{minutes_to_decimal_hours(minutes, places=2)} hrs"
+
+        def _row_height(texts: list[str]) -> float:
+            line_count = 1
+            for text in texts:
+                if text:
+                    line_count = max(line_count, str(text).count("\n") + 1)
+            return max(28, min(160, line_count * 15))
+
+        def _shift_warnings(shift: "Shift", employee_day_shifts: list["Shift"]) -> list[str]:
+            warnings = []
+            if not shift.clock_in:
+                warnings.append("MISSING CLOCK-IN")
+            if not shift.clock_out:
+                warnings.append("MISSING CLOCK-OUT")
+            if not shift.clock_in or not shift.clock_out:
+                warnings.append("REVIEW: INCOMPLETE TIMESTAMPS")
+                return warnings
+            seconds = (shift.clock_out - shift.clock_in).total_seconds()
+            if seconds < 0:
+                warnings.append("REVIEW: CLOCK-OUT BEFORE CLOCK-IN")
+            if seconds > 16 * 60 * 60:
+                warnings.append("REVIEW: SHIFT OVER 16 HOURS")
+            for other in employee_day_shifts:
+                if other.id == shift.id or not other.clock_in or not other.clock_out:
+                    continue
+                if shift.clock_in < other.clock_out and other.clock_in < shift.clock_out:
+                    warnings.append("REVIEW: OVERLAPPING SHIFTS")
+                    break
+            return warnings
+
+        def _excel_width_to_pixels(width: float) -> int:
+            if width <= 0:
+                return 0
+            return int(width * 7 + 5)
+
+        def _place_title_logo(ws, logo_path: str, first_col: int, last_col: int, row_idx: int) -> bool:
+            if not os.path.exists(logo_path):
+                return False
+            try:
+                logo = XLImage(logo_path)
+                if not logo.width or not logo.height:
+                    return False
+                target_height_px = 32
+                ratio = logo.width / logo.height
+                logo.height = target_height_px
+                logo.width = int(target_height_px * ratio)
+                title_text_px = 245
+                gap_px = 10
+                title_area_px = sum(
+                    _excel_width_to_pixels(ws.column_dimensions[get_column_letter(col_idx)].width or 8.43)
+                    for col_idx in range(first_col, last_col + 1)
+                )
+                unit_width_px = logo.width + gap_px + title_text_px
+                logo_left_px = max(0, int((title_area_px - unit_width_px) / 2))
+                logo_top_px = 4
+                remaining_px = logo_left_px
+                anchor_col = first_col - 1
+                for col_idx in range(first_col, last_col + 1):
+                    col_px = _excel_width_to_pixels(ws.column_dimensions[get_column_letter(col_idx)].width or 8.43)
+                    if remaining_px < col_px:
+                        anchor_col = col_idx - 1
+                        break
+                    remaining_px -= col_px
+                marker = AnchorMarker(
+                    col=anchor_col,
+                    colOff=pixels_to_EMU(remaining_px),
+                    row=row_idx - 1,
+                    rowOff=pixels_to_EMU(logo_top_px),
+                )
+                logo.anchor = OneCellAnchor(
+                    _from=marker,
+                    ext=XDRPositiveSize2D(pixels_to_EMU(logo.width), pixels_to_EMU(logo.height)),
+                )
+                ws.add_image(logo)
+                return True
+            except Exception as e:
+                app.logger.info("Payroll XLSX title logo skipped: %s", e)
+                return False
+
+        week_dates = [start_dt + timedelta(days=offset) for offset in range(7)]
+        day_headers = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+        emp_records: dict[str, dict] = {}
+
+        for shift in shifts:
+            emp_name = shift.employee.name if shift.employee else "Unknown Employee"
+            display_name, first_sort, last_sort = _name_parts(emp_name)
+            if emp_name not in emp_records:
+                emp_records[emp_name] = {
+                    "display": display_name or emp_name,
+                    "sort": (last_sort, first_sort, emp_name.lower()),
+                    "days": {wd: [] for wd in range(7)},
+                    "minutes": 0,
+                }
+            mins = shift_minutes(shift)
+            emp_records[emp_name]["minutes"] += mins
+            if shift.clock_in:
+                wd = utc_naive_to_local(shift.clock_in).weekday()
+            else:
+                wd = 0
+            if 0 <= wd <= 6:
+                emp_records[emp_name]["days"][wd].append(shift)
 
         ws = wb.active
         ws.title = "Weekly"
 
-        ws.append(["Payroll Week Start (local)", start_dt.date().isoformat()])
-        ws.append(["Payroll Week End (local)", end_dt.date().isoformat()])
-        ws.append(["Note", "Weekly filter uses CLOCK-OUT date; day columns assign time to CLOCK-IN day (local)."])
-        ws.append([])
+        max_col = 9
+        column_widths = {
+            1: 24,
+            2: 19,
+            3: 19,
+            4: 19,
+            5: 19,
+            6: 19,
+            7: 19,
+            8: 19,
+            9: 13,
+        }
+        for col_idx, width in column_widths.items():
+            ws.column_dimensions[get_column_letter(col_idx)].width = width
 
-        headers = ["Employee", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun", "Total"]
+        ws.merge_cells(start_row=1, start_column=1, end_row=1, end_column=max_col)
+        ws.merge_cells(start_row=2, start_column=1, end_row=2, end_column=max_col)
+        ws["A1"] = "C&C Weekly Payroll"
+        ws["A2"] = f"Payroll Week: {_format_report_date(start_dt)} through {_format_report_date(end_dt)}"
+        ws["A1"].font = title_font
+        ws["A1"].alignment = center
+        ws["A2"].font = subtitle_font
+        ws["A2"].alignment = center
+        ws.row_dimensions[1].height = 30
+        _place_title_logo(ws, logo_path, 1, max_col, 1)
+
+        summary_items = [
+            ("Employees", len(emp_records)),
+            ("Total Shifts", len(shifts)),
+            ("Total Hours", minutes_to_decimal_hours(grand_minutes, places=2)),
+        ]
+        for idx, (label, value) in enumerate(summary_items, start=4):
+            cell = ws.cell(row=4, column=idx)
+            cell.value = f"{label}: {value}"
+            cell.font = small_header_font
+            cell.alignment = center
+            cell.fill = header_fill
+            cell.border = border
+
+        header_row = 5
+        headers = ["Employee"] + [
+            f"{day_headers[idx]}\n{week_dates[idx].strftime('%m/%d')}" for idx in range(7)
+        ] + ["Total"]
         ws.append(headers)
-
-        for col_idx in range(1, len(headers) + 1):
-            c = ws.cell(row=ws.max_row, column=col_idx)
+        for col_idx in range(1, max_col + 1):
+            c = ws.cell(row=header_row, column=col_idx)
             c.font = header_font
-            c.alignment = wrap
+            c.alignment = center
+            c.fill = header_fill
+            c.border = border
 
-        for emp_name in sorted(weekly_map.keys(), key=lambda x: x.lower()):
-            day_cells = []
-            total_emp = 0
-
+        sorted_records = sorted(emp_records.values(), key=lambda item: item["sort"])
+        data_start_row = header_row + 1
+        for record_idx, record in enumerate(sorted_records):
+            row_values = [record["display"]]
+            row_warnings: dict[int, bool] = {}
+            row_texts = [record["display"]]
             for wd in range(7):
-                stores_for_day = weekly_map.get(emp_name, {}).get(wd, {})
-                if not stores_for_day:
-                    day_cells.append("0h 00m")
+                day_shifts = sorted(record["days"][wd], key=lambda item: item.clock_in or datetime.min)
+                if not day_shifts:
+                    row_values.append("")
+                    row_texts.append("")
                     continue
 
                 parts = []
-                for store_name in sorted(stores_for_day.keys(), key=lambda x: x.lower()):
-                    m = stores_for_day[store_name]
-                    total_emp += m
-                    parts.append(f"{store_name} {minutes_to_short(m)}")
+                for shift in day_shifts:
+                    mins = shift_minutes(shift)
+                    warning_labels = _shift_warnings(shift, day_shifts)
+                    store_name = shift.store.name if shift.store else "Unknown Store"
+                    detail = [
+                        store_name,
+                        f"{_format_time(shift.clock_in)} - {_format_time(shift.clock_out)}",
+                        _shift_hours_text(mins),
+                    ]
+                    if warning_labels:
+                        detail.append("\n".join(dict.fromkeys(warning_labels)))
+                        row_warnings[wd + 2] = True
+                    parts.append("\n".join(detail))
+                text = "\n\n".join(parts)
+                row_values.append(text)
+                row_texts.append(text)
+            row_values.append(minutes_to_decimal_hours(record["minutes"], places=2))
+            row_texts.append(str(row_values[-1]))
+            ws.append(row_values)
 
-                day_cells.append("; ".join(parts))
+            row_idx = ws.max_row
+            ws.row_dimensions[row_idx].height = _row_height(row_texts)
+            fill = alt_fill if record_idx % 2 else PatternFill(fill_type=None)
+            for col_idx in range(1, max_col + 1):
+                cell = ws.cell(row=row_idx, column=col_idx)
+                cell.font = normal_font
+                cell.alignment = left_center if col_idx == 1 else wrap_top
+                cell.border = border
+                if fill.fill_type:
+                    cell.fill = fill
+                if col_idx in row_warnings:
+                    cell.fill = warning_fill
+                    cell.font = warning_font
+                if col_idx == max_col:
+                    cell.font = total_font
+                    cell.fill = total_fill
+                    cell.alignment = center
 
-            ws.append([emp_name] + day_cells + [minutes_to_short(total_emp)])
-
-        ws.append(["GRAND TOTAL", "", "", "", "", "", "", "", grand_human_short])
-
-        max_col = len(headers)
-        for row in ws.iter_rows(min_row=1, max_row=ws.max_row, min_col=1, max_col=max_col):
-            for cell in row:
-                cell.alignment = wrap
-
+        grand_row = ws.max_row + 1
+        ws.cell(row=grand_row, column=1).value = "GRAND TOTAL"
+        ws.cell(row=grand_row, column=max_col).value = minutes_to_decimal_hours(grand_minutes, places=2)
         for col_idx in range(1, max_col + 1):
-            ws.column_dimensions[get_column_letter(col_idx)].width = 25
+            cell = ws.cell(row=grand_row, column=col_idx)
+            cell.font = total_font
+            cell.fill = grand_fill
+            cell.border = total_border
+            cell.alignment = center if col_idx == max_col else left_center
 
-        ws.freeze_panes = "A6"
+        ws.freeze_panes = f"A{data_start_row}"
+        ws.sheet_view.showGridLines = False
+        ws.page_setup.orientation = "landscape"
+        ws.page_setup.paperSize = ws.PAPERSIZE_LETTER
+        ws.page_setup.fitToWidth = 1
+        ws.page_setup.fitToHeight = 0
+        ws.sheet_properties.pageSetUpPr.fitToPage = True
+        ws.page_margins.left = 0.25
+        ws.page_margins.right = 0.25
+        ws.page_margins.top = 0.5
+        ws.page_margins.bottom = 0.5
+        ws.page_margins.header = 0.2
+        ws.page_margins.footer = 0.2
+        ws.print_area = f"A1:{get_column_letter(max_col)}{grand_row}"
+        ws.print_title_rows = f"1:{header_row}"
+        ws.sheet_properties.pageSetUpPr.autoPageBreaks = False
+        ws.print_options.horizontalCentered = True
 
         ws2 = wb.create_sheet("Shift Detail")
         detail_headers = ["Employee", "Store", "Clock In", "Clock Out", "Closed By", "Minutes", "Time (Short)"]
@@ -4150,7 +4395,10 @@ def admin_payroll():
         for col_idx in range(1, len(detail_headers) + 1):
             c = ws2.cell(row=1, column=col_idx)
             c.font = header_font
-            c.alignment = wrap
+            c.font = header_font
+            c.alignment = center
+            c.fill = header_fill
+            c.border = border
 
         for r in rows:
             ws2.append([r["employee"], r["store"], r["clock_in"], r["clock_out"], r["clock_out_source"], r["minutes"], r["human_short"]])
@@ -4158,12 +4406,29 @@ def admin_payroll():
         max_col2 = len(detail_headers)
         for row in ws2.iter_rows(min_row=1, max_row=ws2.max_row, min_col=1, max_col=max_col2):
             for cell in row:
-                cell.alignment = wrap
+                cell.alignment = wrap_center
+                cell.border = border
+                if cell.row > 1:
+                    cell.font = normal_font
 
-        for col_idx in range(1, max_col2 + 1):
-            ws2.column_dimensions[get_column_letter(col_idx)].width = 25
+        detail_widths = [24, 24, 22, 22, 18, 12, 14]
+        for col_idx, width in enumerate(detail_widths, start=1):
+            ws2.column_dimensions[get_column_letter(col_idx)].width = width
 
         ws2.freeze_panes = "A2"
+        ws2.auto_filter.ref = f"A1:{get_column_letter(max_col2)}{ws2.max_row}"
+        ws2.sheet_view.showGridLines = False
+        ws2.page_setup.orientation = "landscape"
+        ws2.page_setup.paperSize = ws2.PAPERSIZE_LETTER
+        ws2.page_setup.fitToWidth = 1
+        ws2.page_setup.fitToHeight = 0
+        ws2.sheet_properties.pageSetUpPr.fitToPage = True
+        ws2.page_margins.left = 0.25
+        ws2.page_margins.right = 0.25
+        ws2.page_margins.top = 0.5
+        ws2.page_margins.bottom = 0.5
+        ws2.print_area = f"A1:{get_column_letter(max_col2)}{ws2.max_row}"
+        ws2.print_title_rows = "1:1"
 
         bio = BytesIO()
         wb.save(bio)
