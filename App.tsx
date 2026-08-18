@@ -68,6 +68,11 @@ const API_BASE = __DEV__ ? 'http://10.0.2.2:5000' : 'https://clockin-app.onrende
 const DEVICE_TOKEN = 'KeatonClockInMobile_Venom97Triad1997151506172024!';
 const SESSION_KEY = 'clockin_mobile_employee_session_v1';
 const SELECTED_STORE_KEY = 'clockin_mobile_selected_store_v1';
+const BG_SHIFT_DISTANCE_FILTER_M = 35;
+const BG_SHIFT_STATIONARY_RADIUS_M = 25;
+const BG_SHIFT_STOP_TIMEOUT_MIN = 5;
+const BG_SHIFT_ACTIVITY_RECOGNITION_INTERVAL_MS = 10000;
+const BG_SHIFT_MOTION_TRIGGER_DELAY_MS = 15000;
 
 function headersJson() {
   return {
@@ -114,7 +119,9 @@ export default function App() {
   // Keep a device_uuid (BG provides one in events; we also store last seen server-side)
   const deviceUuidRef = useRef<string | null>(null);
   const bgInitInFlightRef = useRef<Promise<void> | null>(null);
+  const bgTransitionInFlightRef = useRef<Promise<void> | null>(null);
   const bgStartedRef = useRef(false);
+  const nativeUploadKeyRef = useRef<string | null>(null);
   const latestBgRef = useRef<any>({});
 
   // ✅ filteredStores (ONLY DECLARED ONCE)
@@ -140,8 +147,6 @@ export default function App() {
   const promptTimerRef = useRef<any>(null);
 
   // ✅ Auto-close after EXIT grace period
-  const BG_HEARTBEAT_SECONDS = 15 * 60;
-
   function clearPromptTimer() {
     if (promptTimerRef.current) {
       clearTimeout(promptTimerRef.current);
@@ -197,6 +202,164 @@ export default function App() {
     return {res, data};
   }
 
+  async function runBgTransition(task: () => Promise<void>) {
+    if (bgTransitionInFlightRef.current) {
+      await bgTransitionInFlightRef.current.catch(() => null);
+    }
+
+    bgTransitionInFlightRef.current = task();
+    try {
+      await bgTransitionInFlightRef.current;
+    } finally {
+      bgTransitionInFlightRef.current = null;
+    }
+  }
+
+  async function startShiftTracking(reason: string) {
+    if (!locationReady) return;
+
+    await runBgTransition(async () => {
+      if (bgInitInFlightRef.current) {
+        log(`waiting for tracking ready before start (${reason})`);
+        await bgInitInFlightRef.current.catch(e => {
+          log(`tracking ready wait failed: ${String(e)}`);
+        });
+      }
+
+      let state = await BackgroundGeolocation.getState().catch(() => null);
+      if (state?.enabled) {
+        bgStartedRef.current = true;
+        setBgState(state);
+        log(`movement tracking already enabled (${reason})`);
+        return;
+      }
+
+      try {
+        await BackgroundGeolocation.start();
+      } catch (e) {
+        const msg = String(e);
+        if (!msg.includes('Waiting for previous start action to complete')) {
+          throw e;
+        }
+        log('tracking start already pending; waiting for state');
+        await new Promise<void>(resolve => setTimeout(resolve, 1500));
+      }
+
+      state = await BackgroundGeolocation.getState();
+      if (!state.enabled) {
+        await new Promise<void>(resolve => setTimeout(resolve, 1500));
+        state = await BackgroundGeolocation.getState();
+      }
+
+      bgStartedRef.current = state.enabled;
+      setBgState(state);
+      log(`movement tracking started enabled=${state.enabled} (${reason})`);
+    });
+  }
+
+  async function enableNativeHttpForShift(openShiftValue: OpenShift, codeClean: string) {
+    if (!openShiftValue?.shift_id || !openShiftValue?.store_id || !codeClean || !locationReady) {
+      return;
+    }
+
+    const uploadKey = `${codeClean}:${openShiftValue.shift_id}:${openShiftValue.store_id}`;
+    if (nativeUploadKeyRef.current === uploadKey && bgStartedRef.current) {
+      return;
+    }
+
+    try {
+      if (nativeUploadKeyRef.current !== uploadKey) {
+        await BackgroundGeolocation.destroyLocations().catch(() => null);
+      }
+
+      await BackgroundGeolocation.setConfig({
+        url: `${API_BASE}/api/mobile/bg/event`,
+        method: 'POST',
+        autoSync: true,
+        batchSync: false,
+        maxBatchSize: 1,
+        headers: {
+          'X-Device-Token': DEVICE_TOKEN,
+        },
+        params: {
+          event: 'location',
+          source: 'native_movement',
+          employee_code: codeClean,
+          shift_id: openShiftValue.shift_id,
+          store_id: openShiftValue.store_id,
+          device_uuid: deviceUuidRef.current,
+          device_label: deviceLabel(),
+        },
+        desiredAccuracy: -1,
+        distanceFilter: BG_SHIFT_DISTANCE_FILTER_M,
+        stationaryRadius: BG_SHIFT_STATIONARY_RADIUS_M,
+        stopTimeout: BG_SHIFT_STOP_TIMEOUT_MIN,
+        activityRecognitionInterval: BG_SHIFT_ACTIVITY_RECOGNITION_INTERVAL_MS,
+        motionTriggerDelay: BG_SHIFT_MOTION_TRIGGER_DELAY_MS,
+        disableElasticity: false,
+        disableStopDetection: false,
+        stopOnStationary: false,
+        geofenceModeHighAccuracy: true,
+        foregroundService: true,
+        stopOnTerminate: false,
+        startOnBoot: true,
+      } as any);
+
+      nativeUploadKeyRef.current = uploadKey;
+      log(
+        `native movement upload enabled shift=${openShiftValue.shift_id} store=${openShiftValue.store_id}`,
+      );
+      await startShiftTracking('open shift');
+    } catch (e) {
+      log(`native movement upload enable failed: ${String(e)}`);
+    }
+  }
+
+  async function disableNativeHttpUploads(reason: string) {
+    if (!locationReady && !nativeUploadKeyRef.current) return;
+    if (!bgStartedRef.current && !nativeUploadKeyRef.current) return;
+
+    try {
+      await BackgroundGeolocation.setConfig({
+        url: '',
+        autoSync: false,
+        params: {},
+        headers: {},
+        distanceFilter: BG_SHIFT_DISTANCE_FILTER_M,
+        disableElasticity: false,
+      } as any);
+      await BackgroundGeolocation.destroyLocations().catch(() => null);
+      if (nativeUploadKeyRef.current) {
+        log(`native HTTP location upload disabled (${reason})`);
+      }
+      nativeUploadKeyRef.current = null;
+    } catch (e) {
+      log(`native upload disable failed: ${String(e)}`);
+    }
+  }
+
+  async function applyNativeHttpForStatus(fresh: StatusResponse | null, codeOverride?: string) {
+    const codeClean = (codeOverride || employeeCode).trim().toLowerCase();
+    if (!fresh?.open_shift || !codeClean) {
+      await disableNativeHttpUploads('no open shift');
+      if (locationReady && bgStartedRef.current) {
+        await runBgTransition(async () => {
+          const state = await BackgroundGeolocation.getState().catch(() => null);
+          if (state?.enabled) {
+            await BackgroundGeolocation.stop();
+            const stopped = await BackgroundGeolocation.getState().catch(() => null);
+            bgStartedRef.current = false;
+            if (stopped) setBgState(stopped);
+            log('movement tracking stopped (no open shift)');
+          }
+        });
+      }
+      return;
+    }
+
+    await enableNativeHttpForShift(fresh.open_shift, codeClean);
+  }
+
   async function persistEmployeeSession(
     code: string,
     pinValue: string,
@@ -210,6 +373,21 @@ export default function App() {
         employee: employeeValue,
       }),
     );
+  }
+
+  async function readSavedEmployeeSession(): Promise<{employeeCode: string; pin: string} | null> {
+    try {
+      const raw = await AsyncStorage.getItem(SESSION_KEY);
+      if (!raw) return null;
+      const saved = JSON.parse(raw);
+      const savedCode = String(saved?.employeeCode || '').trim().toLowerCase();
+      const savedPin = String(saved?.pin || '').trim();
+      if (!savedCode || !savedPin) return null;
+      return {employeeCode: savedCode, pin: savedPin};
+    } catch (e) {
+      log(`[ClockInSession] saved session read failed: ${String(e)}`);
+      return null;
+    }
   }
 
   async function persistSelectedStore(store: StoreItem) {
@@ -414,6 +592,7 @@ export default function App() {
       if (fresh.employee) {
         setEmployee(fresh.employee);
       }
+      await applyNativeHttpForStatus(fresh, codeClean);
 
       if (fresh?.open_shift) {
         log(
@@ -667,6 +846,7 @@ useEffect(() => {
 
   async function logout() {
     hidePrompt();
+    await applyNativeHttpForStatus(null);
     setStorePickerVisible(false);
     setStoreSearch('');
     setLoggedIn(false);
@@ -903,6 +1083,7 @@ useEffect(() => {
 
     log(`✅ /api/mobile/clock-out OK minutes=${data.minutes}`);
     hidePrompt();
+    await applyNativeHttpForStatus(null);
     await refreshStatus();
   }
   async function onPromptYes() {
@@ -983,28 +1164,48 @@ useEffect(() => {
           );
         }
 
-        try {
-          await postBgEvent({
-            event: 'location',
-            timestamp: location.timestamp,
-            lat: location.coords.latitude,
-            lng: location.coords.longitude,
-            accuracy_m: location.coords.accuracy,
-            ...bgEventContext(),
-            location: location as any,
-          }, {
-            device_uuid: deviceUuidRef.current || (location as any)?.uuid,
-            device_label: deviceLabel(),
-          });
-        } catch (e) {
-          log(`postBgEvent failed: ${String(e)}`);
-        }
-
-        if (latest.loggedIn) {
-        }
+        // Native HTTP owns movement location uploads while a shift is open.
+        // The passive JS listener only captures UUID/debug details.
       },
       err => latestBgRef.current.showDebug && log(`location error: ${JSON.stringify(err)}`),
     );
+
+    const subMotion = BackgroundGeolocation.onMotionChange(async (event: any) => {
+      try {
+        const latest = latestBgRef.current;
+        const location = event?.location;
+        const coords = location?.coords || {};
+        const lat = coords.latitude;
+        const accuracy = coords.accuracy;
+        log(
+          `motionchange moving=${event?.isMoving === true} ${
+            typeof lat === 'number' ? `acc=${Math.round(accuracy || 0)}m` : 'no-location'
+          }`,
+        );
+        if (!latest.loggedIn || !latest.status?.open_shift) return;
+
+        await postBgEvent(
+          {
+            event: 'motionchange',
+            source: 'app_motion',
+            timestamp: location?.timestamp || Date.now(),
+            is_moving: event?.isMoving === true,
+            lat: coords.latitude,
+            lng: coords.longitude,
+            accuracy_m: coords.accuracy,
+            ...bgEventContext(),
+            location,
+            motion: event,
+          },
+          {
+            device_uuid: deviceUuidRef.current || location?.uuid,
+            device_label: deviceLabel(),
+          },
+        );
+      } catch (e) {
+        log(`postBgEvent motionchange failed: ${String(e)}`);
+      }
+    });
 
     const subGeofence = BackgroundGeolocation.onGeofence(async (event: GeofenceEvent) => {
       const latest = latestBgRef.current;
@@ -1013,7 +1214,7 @@ useEffect(() => {
       try {
         const gfLocation = (event as any)?.location;
         const gfCoords = gfLocation?.coords || {};
-        await postBgEvent({
+        const response = await postBgEvent({
           event: 'geofence',
           timestamp: Date.now(),
           geofence_action: event.action,
@@ -1026,6 +1227,11 @@ useEffect(() => {
           device_uuid: deviceUuidRef.current || gfLocation?.uuid,
           device_label: deviceLabel(),
         });
+        log(
+          `geofence upload accepted action=${event.action} ping_created=${
+            response?.ping_created === true
+          }`,
+        );
       } catch (e) {
         log(`postBgEvent geofence failed: ${String(e)}`);
       }
@@ -1058,44 +1264,10 @@ useEffect(() => {
       }
     });
 
-    const subHeartbeat = BackgroundGeolocation.onHeartbeat(async (event: any) => {
-      const latest = latestBgRef.current;
-      if (!latest.loggedIn) return;
-
-      try {
-        const fresh = await latest.refreshStatus?.({silent: true});
-        if (!fresh?.open_shift) {
-          log('heartbeat skipped: no open shift');
-          return;
-        }
-
-        const locationResult = await getFreshPosition();
-        if (!locationResult.location) {
-          log(`heartbeat location failed: ${locationResult.errorMessage || locationResult.errorCode || 'unknown'}`);
-          return;
-        }
-
-        const loc = locationResult.location;
-        await postBgEvent({
-          event: 'heartbeat',
-          timestamp: event?.timestamp || loc.timestamp || Date.now(),
-          lat: loc.coords.latitude,
-          lng: loc.coords.longitude,
-          accuracy_m: loc.coords.accuracy,
-          employee_code: String(latest.employeeCode || '').trim().toLowerCase(),
-          shift_id: fresh.open_shift.shift_id,
-          store_id: fresh.open_shift.store_id,
-          heartbeat: event || {},
-          location: loc as any,
-        }, {
-          device_uuid: deviceUuidRef.current || (loc as any)?.uuid,
-          device_label: deviceLabel(),
-        });
-
-        log('heartbeat location posted');
-      } catch (e) {
-        log(`heartbeat post failed: ${String(e)}`);
-      }
+    const subHttp = BackgroundGeolocation.onHttp((event: any) => {
+      const statusCode = event?.status || event?.statusCode || '';
+      const success = event?.success === true ? 'ok' : 'failed';
+      log(`native HTTP upload ${success} status=${statusCode}`);
     });
 
     const subProvider = BackgroundGeolocation.onProviderChange(p => {
@@ -1121,8 +1293,14 @@ useEffect(() => {
       bgInitInFlightRef.current = (async () => {
         const state = await BackgroundGeolocation.ready({
           desiredAccuracy: -1,
-          distanceFilter: 25,
-          heartbeatInterval: BG_HEARTBEAT_SECONDS,
+          distanceFilter: BG_SHIFT_DISTANCE_FILTER_M,
+          stationaryRadius: BG_SHIFT_STATIONARY_RADIUS_M,
+          stopTimeout: BG_SHIFT_STOP_TIMEOUT_MIN,
+          activityRecognitionInterval: BG_SHIFT_ACTIVITY_RECOGNITION_INTERVAL_MS,
+          motionTriggerDelay: BG_SHIFT_MOTION_TRIGGER_DELAY_MS,
+          enableHeadless: true,
+          url: '',
+          autoSync: false,
           foregroundService: true,
           stopOnTerminate: false,
           startOnBoot: true,
@@ -1135,51 +1313,17 @@ useEffect(() => {
             text: 'Location tracking enabled',
           },
           geofenceProximityRadius: 200,
+          geofenceModeHighAccuracy: true,
         } as any);
 
         setBgState(state);
         log(`ready enabled=${state.enabled} moving=${state.isMoving}`);
 
-        if (state.enabled) {
-          bgStartedRef.current = true;
-          return;
-        }
-
-        try {
-          await BackgroundGeolocation.start();
-        } catch (e) {
-          const msg = String(e);
-          if (!msg.includes('Waiting for previous start action to complete')) {
-            throw e;
-          }
-
-          log('tracking start already pending; waiting for state');
-          await new Promise<void>(resolve => setTimeout(resolve, 1500));
-        }
-
-        let startedState = await BackgroundGeolocation.getState();
-        if (!startedState.enabled) {
-          await new Promise<void>(resolve => setTimeout(resolve, 1500));
-          startedState = await BackgroundGeolocation.getState();
-        }
-
-        if (!startedState.enabled) {
-          try {
-            await BackgroundGeolocation.start();
-          } catch (e) {
-            const msg = String(e);
-            if (!msg.includes('Waiting for previous start action to complete')) {
-              throw e;
-            }
-            log('tracking start still pending after retry');
-          }
-          await new Promise<void>(resolve => setTimeout(resolve, 1500));
-          startedState = await BackgroundGeolocation.getState();
-        }
-
-        setBgState(startedState);
-        bgStartedRef.current = startedState.enabled;
-        log(`tracking started enabled=${startedState.enabled}`);
+        bgStartedRef.current = state.enabled;
+        await applyNativeHttpForStatus(
+          latestBgRef.current.status || status,
+          latestBgRef.current.employeeCode || employeeCode,
+        );
       })();
 
       try {
@@ -1196,13 +1340,28 @@ useEffect(() => {
 
     return () => {
       subLocation.remove();
+      subMotion.remove();
       subGeofence.remove();
-      subHeartbeat.remove();
+      subHttp.remove();
       subProvider.remove();
     };
 
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [locationReady]);
+
+  useEffect(() => {
+    if (!loggedIn) {
+      applyNativeHttpForStatus(null).catch(e => {
+        log(`tracking logout sync failed: ${String(e)}`);
+      });
+      return;
+    }
+
+    applyNativeHttpForStatus(status, employeeCode).catch(e => {
+      log(`native upload status sync failed: ${String(e)}`);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loggedIn, locationReady, status?.open_shift?.shift_id, employeeCode]);
   // -----------------------------------
   // UI
   // -----------------------------------
